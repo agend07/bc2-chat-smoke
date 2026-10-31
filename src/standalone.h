@@ -8,5 +8,6 @@
 #define BC2_CHAT_APPDIR      "BC2ChatSmoke"    /* %LOCALAPPDATA%\BC2ChatSmoke: lists, config.ini, logs\ */
 #define BC2_CHAT_TAG         "[chat]"          /* sender of the local replies */
 #define BC2_CHAT_LOG_PREFIX  "bc2-chat-smoke"  /* OutputDebugString prefix and the list-file header */
+#define BC2_SMOKE_DEFAULT    "halloween"       /* first-run smoke preset (until /smoke off or another colour) */
 
 #endif

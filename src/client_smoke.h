@@ -18,6 +18,9 @@ void bc2_smoke_tick(void);
 /* Animation (r255d): /smoke rainbow [s] (hue cycles, whole cloud), /smoke psycho [s] (young/old particles get opposite
  * rotating hues, each emitter template 120 deg apart), /smoke pulse <color> [s]; the monitor thread rewrites the known
  * colour objects 20x/s (no scan). Modes persist in the ini ([smoke] mode= period=).
+ * /smoke duo <young> <old> (r297): two fixed colours (Color1 / Color0), no animation; ini color= color2= mode=duo.
+ * /smoke halloween = duo pumpkin blood. A build may define BC2_SMOKE_DEFAULT (e.g. "halloween"): applied once, on the
+ * first run without any [smoke] color= key, then persisted like a typed command (/smoke off sticks).
  * args = text after "/smoke" (may be empty = status). Writes the reply into out. Always returns 1. */
 int bc2_smoke_command(const char *args, char *out, int out_size);
 

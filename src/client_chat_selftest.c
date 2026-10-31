@@ -169,9 +169,18 @@ int main(int argc, char **argv)
     check(bc2_chat_command("/smoke rainbow fast", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/smoke rainbow bad period = usage");
     check(bc2_chat_command("/smoke status", out, sizeof(out)) == 1 && strstr(out, "smoke: pulse 1.5s blue"), "status shows the mode");
     check(bc2_chat_command("/smoke green", out, sizeof(out)) == 1 && strstr(out, "smoke: green"), "static colour after a mode");
-    check(bc2_smoke_parse_color("pumpkin", rgb_h) && rgb_h[0] == 1.0f && rgb_h[1] > 0.45f && rgb_h[1] < 0.47f, "parse 'pumpkin' (Halloween preset)");
-    check(bc2_chat_command("/smoke halloween", out, sizeof(out)) == 1 && strstr(out, "pulse, period 2.0"), "/smoke halloween = pulse pumpkin 2");
-    check(bc2_chat_command("/smoke status", out, sizeof(out)) == 1 && strstr(out, "smoke: pulse 2.0s pumpkin"), "status shows the halloween preset");
+    check(bc2_smoke_parse_color("pumpkin", rgb_h) && rgb_h[0] == 1.0f && rgb_h[1] > 0.25f && rgb_h[1] < 0.26f && rgb_h[2] == 0.0f, "parse 'pumpkin' (Halloween preset)");
+    check(bc2_chat_command("/smoke duo red", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/smoke duo with one colour = usage");
+    check(bc2_chat_command("/smoke duo red plaid", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/smoke duo bad second colour = usage");
+    check(bc2_chat_command("/smoke halloween", out, sizeof(out)) == 1 && strstr(out, "duo pumpkin -> blood"), "/smoke halloween = duo pumpkin blood");
+    check(bc2_chat_command("/smoke status", out, sizeof(out)) == 1 && strstr(out, "smoke: duo pumpkin blood"), "status shows the halloween preset");
+    {
+        const float two[6] = { 1.0f, 0.5f, 0.0f, 0.0f, 0.0f, 1.0f };
+        float d1[3], d0[3];
+        bc2_smoke_anim_colors(5, 1.0f, 123.0f, two, 2, d1, d0);
+        check(d1[0] == 1.0f && d1[1] == 0.5f && d1[2] == 0.0f && d0[0] == 0.0f && d0[2] > 0.69f && d0[2] < 0.71f,
+              "duo: young = first colour, old = second colour at 0.7, independent of time");
+    }
     check(bc2_chat_command("/smoke alpha 0.25", out, sizeof(out)) == 1 && strstr(out, "alpha = 0.25"), "/smoke alpha 0.25");
     check(bc2_chat_command("/smoke tpl ambient orig", out, sizeof(out)) == 1 && strstr(out, "ambient = orig"), "/smoke tpl ambient orig");
     check(bc2_chat_command("/smoke alpha plaid", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/smoke alpha bad = usage");

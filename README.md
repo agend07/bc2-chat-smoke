@@ -12,7 +12,7 @@ standalone `msimg32.dll`:
 Everything runs on your side only. Replies are shown to you alone, nothing is sent to the server, and other players
 see the normal grey smoke. Nothing on disk is modified: not the game exe, not Project Rome's `dinput8.dll`.
 
-Current version: **0.1.0**. Licence: MIT (see `LICENSE`).
+Current version: **0.1.1**. Licence: MIT (see `LICENSE`).
 
 ## Install
 
@@ -58,7 +58,7 @@ entry per line, lines starting with `#` or `;` are comments.
 
 `/smoke` recolours all smoke-grenade smoke you see: the vapor cloud, the trail and the projectile trail, for the
 launcher and the hand grenade alike. The setting is remembered in `config.ini` and re-applied on the next start and
-after every level load.
+after every level load. On the very first start (no `[smoke]` setting yet) the Halloween preset is active.
 
 | Command | Effect |
 |---|---|
@@ -67,7 +67,8 @@ after every level load.
 | `/smoke rainbow [s]` | Hue cycles through the whole cloud; period in seconds, default 6. |
 | `/smoke psycho [s]` | Young and old particles get opposite hues, rotating; default 8 s. |
 | `/smoke pulse <color> [s]` | One colour, brightness breathing; default 2 s. |
-| `/smoke halloween` | Preset: `pulse pumpkin 2`, a breathing pumpkin-orange cloud. |
+| `/smoke duo <young> <old>` | Two fixed colours: fresh particles get the first, old particles fade into the second. No animation. |
+| `/smoke halloween` | Preset: `duo pumpkin blood`, orange-red smoke darkening into blood red. **Active by default on the first start**; `/smoke off` or any other colour replaces it for good. |
 | `/smoke off` | Restore the original greys. |
 | `/smoke status` | How many colour objects were found and patched, scan timing, current mode. |
 | `/smoke alpha <0..1\|orig>` | Advanced: template tunable (also `ambient`, `vpl`, `normal`). `orig` restores the original value. |
@@ -77,9 +78,11 @@ Colour names:
 | Group | Names |
 |---|---|
 | Basic | `red` `green` `blue` `yellow` `cyan` `magenta` `orange` `purple` `pink` `white` `black` `lime` `teal` `gold` `grey` / `gray` |
-| Halloween presets | `pumpkin` (`#ff7518`), `ghost` (`#f4f4ff`), `blood` (`#8a0303`) |
+| Halloween presets | `pumpkin` (`#ff4000`), `ghost` (`#f4f4ff`), `blood` (`#ff1000`) |
 
-Any other colour as `#rrggbb`. Periods are accepted from 0.2 to 600 seconds.
+Any other colour as `#rrggbb`. Periods are accepted from 0.2 to 600 seconds. The smoke shader mixes some grey into
+every colour, so strongly saturated colours (one channel at full, another near zero) keep their look best; pale or
+mixed tones come out greyish.
 
 After a level loads the dll scans the game memory for the smoke colour objects at about 4 s and 20 s; a scan takes
 1 to 2 seconds on the dll's own thread, not on a game thread. A new colour becomes visible once the scan has found
@@ -98,7 +101,7 @@ because the game folder under Program Files is read-only for the game:
 |---|---|
 | `muted_players.txt` | Mute list (one entry per line, `#` / `;` comments). Created empty on the first run. |
 | `hashed_players.txt` | Hash list, same format. |
-| `config.ini` | `[dll] chat=off` disables everything; `[smoke]` keys `color=`, `mode=`, `period=`, `per=` keep the smoke setting. |
+| `config.ini` | `[dll] chat=off` disables everything; `[smoke]` keys `color=`, `color2=`, `mode=`, `period=`, `per=` keep the smoke setting. |
 | `logs\chat_<pid>.log` | One log per game process; the first line is the dll version. Attach it to bug reports. |
 
 **Migration from bc2_mute:** on the first run, if an old `muted_players.txt` lies next to the dll in the game folder
@@ -174,14 +177,14 @@ the zip and `SHA256.txt` on every tag `v*`.
 Compare it with the hash of what you downloaded:
 
 ```powershell
-Get-FileHash .\bc2-chat-smoke-0.1.0.zip -Algorithm SHA256
+Get-FileHash .\bc2-chat-smoke-0.1.1.zip -Algorithm SHA256
 Get-FileHash .\msimg32.dll -Algorithm SHA256
 ```
 
 or
 
 ```bat
-certutil -hashfile bc2-chat-smoke-0.1.0.zip SHA256
+certutil -hashfile bc2-chat-smoke-0.1.1.zip SHA256
 certutil -hashfile msimg32.dll SHA256
 ```
 

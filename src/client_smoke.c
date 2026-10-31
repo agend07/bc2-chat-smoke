@@ -35,6 +35,9 @@
 #ifndef BC2_CHAT_LOG_PREFIX
 #define BC2_CHAT_LOG_PREFIX  "dinput8 proxy"
 #endif
+#ifndef BC2_SMOKE_DEFAULT
+#define BC2_SMOKE_DEFAULT    ""   /* /smoke args applied on the very first run (no [smoke] color= yet); "" = none */
+#endif
 #define VT_PCID              0x0145BE04u
 #define OFF_EVAL_TYPE        0x14u
 #define OFF_COLOR1           0x30u
@@ -59,6 +62,7 @@
 #define MODE_PSYCHO          2   /* Color1/Color0 = opposite hues, rotating; each template offset by 120 deg */
 #define MODE_PULSE           3   /* one colour, brightness sine */
 #define MODE_PER             4   /* r259: every grenade effect its own palette colour (per-instance hook) */
+#define MODE_DUO             5   /* two fixed colours: young particles (Color1) -> old particles (Color0), no animation */
 #define PI_F                 3.14159265f
 #define PER_MAX_PAL          12
 #define PER_DEF_PAL          8
@@ -94,15 +98,15 @@ static int g_cs_ready;
 static obj_entry g_objs[MAX_OBJS];
 static int g_nobjs;
 static int g_active;                 /* mailbox: a wish color is set */
-static float g_rgb[3];               /* mailbox */
-static char g_wish[32];              /* mailbox: text as given (name or #rrggbb) */
+static float g_rgb[6];               /* mailbox: [0..2] the colour, [3..5] the second (old-particle) colour of MODE_DUO */
+static char g_wish[32], g_wish2[32]; /* mailbox: text as given (name or #rrggbb); wish2 = the DUO second colour */
 static float g_tpl[NTPL];            /* mailbox: wished template field values, NaN = leave original */
 static int g_mode;                   /* mailbox: MODE_* */
 static float g_period;               /* mailbox: animation period in seconds */
 static int g_pending;                /* mailbox: wish changed since the last tick */
 static int g_npal = PER_DEF_PAL;     /* mailbox: MODE_PER palette size 2..12 */
 static int s_active, s_mode, s_npal; /* tick's snapshot of the mailbox (used by apply_all under g_cs) */
-static float s_rgb[3], s_tpl[NTPL], s_period;
+static float s_rgb[6], s_tpl[NTPL], s_period;
 /* hook install state (written by the monitor thread in tick, read by status under g_cmd_cs): 0 not tried, 1 ok, -1 refused */
 static int g_hook_state;
 static char g_hook_why[64];
@@ -138,8 +142,9 @@ static const named_color NAMES[] = {
     { "magenta", 0xff20ff }, { "orange", 0xff8000 }, { "purple", 0xa020ff }, { "pink", 0xff60c0 }, { "white", 0xffffff },
     { "black", 0x101010 }, { "lime", 0x80ff00 }, { "teal", 0x00a0a0 }, { "gold", 0xffc000 }, { "grey", 0xa0a0a0 },
     { "gray", 0xa0a0a0 },
-    /* Halloween presets (2026-10-31); "/smoke halloween" = pulse pumpkin 2 */
-    { "pumpkin", 0xff7518 }, { "ghost", 0xf4f4ff }, { "blood", 0x8a0303 },
+    /* Halloween presets (2026-10-31); "/smoke halloween" = duo pumpkin blood (both live-picked 2026-10-31). pumpkin is a red-leaning orange (live-picked): the
+     * alpha-as-colour blend greys the cloud, so a yellow-leaning orange (0xff7518) came out tan in the live test */
+    { "pumpkin", 0xff4000 }, { "ghost", 0xf4f4ff }, { "blood", 0xff1000 },
 };
 
 static int hexval(char c)
@@ -215,7 +220,8 @@ void bc2_smoke_hsv(float hue, float v, float rgb[3])
     }
 }
 
-/* the two colour ends an emitter of kind k (1..3) gets at animation time t (seconds) in mode */
+/* the two colour ends an emitter of kind k (1..3) gets at animation time t (seconds) in mode;
+ * rgb = the wish colour (MODE_DUO reads SIX floats: young colour, then old colour) */
 void bc2_smoke_anim_colors(int mode, float period, float t, const float rgb[3], int kind, float c1[3], float c0[3])
 {
     const float *o1 = KINDS[kind - 1].c1, *o0 = KINDS[kind - 1].c0;
@@ -236,6 +242,12 @@ void bc2_smoke_anim_colors(int mode, float period, float t, const float rgb[3], 
         for (i = 0; i < 3; i++)
             tmp[i] = rgb[i] * (0.55f + 0.45f * (float)sin(2.0f * PI_F * ph));
         bc2_smoke_map_colors(tmp, o1, o0, c1, c0);
+        break;
+    case MODE_DUO:   /* like psycho's two ends, but fixed: young = first colour as is, old = second colour a bit darker */
+        for (i = 0; i < 3; i++) {
+            c1[i] = rgb[i];
+            c0[i] = rgb[3 + i] * 0.7f;
+        }
         break;
     default:
         bc2_smoke_map_colors(rgb, o1, o0, c1, c0);
@@ -492,7 +504,7 @@ static void apply_all(void)
             if (obj_write(o, KINDS[o->kind - 1].c1, KINDS[o->kind - 1].c0)) { o->patched = 0; n++; } else fail++;
         }
     }
-    if ((n && (s_mode == MODE_STATIC || !s_active)) || fail) {
+    if ((n && (s_mode == MODE_STATIC || s_mode == MODE_DUO || !s_active)) || fail) {
         wsprintfA(line, "%s %d object(s), %d failed, %d known", s_active && s_mode != MODE_PER ? "patched" : "restored", n, fail, g_nobjs);
         slog(line);
     }
@@ -757,10 +769,26 @@ void bc2_smoke_init(void)
     g_period = parse_float(value, &f) && f > 0.0f ? f : 6.0f;
     GetPrivateProfileStringA("smoke", "mode", "", value, sizeof(value), ini);
     g_mode = _stricmp(value, "rainbow") == 0 ? MODE_RAINBOW : _stricmp(value, "psycho") == 0 ? MODE_PSYCHO :
-             _stricmp(value, "pulse") == 0 ? MODE_PULSE : _stricmp(value, "per") == 0 ? MODE_PER : MODE_STATIC;
+             _stricmp(value, "pulse") == 0 ? MODE_PULSE : _stricmp(value, "per") == 0 ? MODE_PER :
+             _stricmp(value, "duo") == 0 ? MODE_DUO : MODE_STATIC;
+    GetPrivateProfileStringA("smoke", "color2", "", value, sizeof(value), ini);
+    if (!bc2_smoke_parse_color(value, g_rgb + 3)) {   /* duo second colour; default blood */
+        lstrcpyA(value, "blood");
+        bc2_smoke_parse_color(value, g_rgb + 3);
+    }
+    lstrcpynA(g_wish2, value, sizeof(g_wish2));
     i = (int)GetPrivateProfileIntA("smoke", "per", PER_DEF_PAL, ini);
     g_npal = i >= 2 && i <= PER_MAX_PAL ? i : PER_DEF_PAL;
     GetPrivateProfileStringA("smoke", "color", "", value, sizeof(value), ini);
+    if (!value[0] && BC2_SMOKE_DEFAULT[0]) {
+        /* first run of a build with a default preset: no color= key at all (after /smoke off it is "off", so the
+         * user's choice sticks). Goes through the command path, which persists it like a typed command. */
+        char reply[200];
+        g_anim_t0 = GetTickCount();
+        bc2_smoke_command(BC2_SMOKE_DEFAULT, reply, sizeof(reply));
+        slog("first run: default preset " BC2_SMOKE_DEFAULT);
+        return;
+    }
     /* the hook for mode=per is installed by the first tick (monitor thread), see bc2_smoke_tick */
     if (value[0] && _stricmp(value, "off") != 0 &&
         (bc2_smoke_parse_color(value, g_rgb) || g_mode == MODE_RAINBOW || g_mode == MODE_PSYCHO || g_mode == MODE_PER)) {
@@ -842,6 +870,8 @@ static void status_line(char *out, int size)
     lstrcpynA(wish, g_wish, sizeof(wish));
     if (g_mode == MODE_PER)
         sprintf_s(wish, sizeof(wish), "per %d", g_npal);
+    else if (g_mode == MODE_DUO)
+        _snprintf_s(wish, sizeof(wish), _TRUNCATE, "duo %s %s", g_wish, g_wish2);
     else if (g_mode != MODE_STATIC)
         sprintf_s(wish, sizeof(wish), "%s %.1fs%s%s", g_mode == MODE_RAINBOW ? "rainbow" : g_mode == MODE_PSYCHO ? "psycho" : "pulse",
                   g_period, g_mode == MODE_PULSE ? " " : "", g_mode == MODE_PULSE ? g_wish : "");
@@ -898,8 +928,8 @@ int bc2_smoke_command(const char *args, char *out, int out_size)
         status_line(out, out_size);
         return 1;
     }
-    if (_stricmp(a, "halloween") == 0)   /* preset: a breathing pumpkin-orange cloud (persisted like any pulse mode) */
-        lstrcpyA(a, "pulse pumpkin 2");
+    if (_stricmp(a, "halloween") == 0)   /* preset: young particles pumpkin orange, old ones blood red (persisted like any duo) */
+        lstrcpyA(a, "duo pumpkin blood");
     if (_stricmp(a, "off") == 0) {
         EnterCriticalSection(&g_cmd_cs);
         g_active = 0;
@@ -923,6 +953,30 @@ int bc2_smoke_command(const char *args, char *out, int out_size)
         if (_stricmp(w1, "rainbow") == 0) mode = MODE_RAINBOW;
         else if (_stricmp(w1, "psycho") == 0) mode = MODE_PSYCHO;
         else if (_stricmp(w1, "pulse") == 0) mode = MODE_PULSE;
+        if (_stricmp(w1, "duo") == 0) {
+            /* "/smoke duo <young colour> <old colour>": two fixed colours, no animation */
+            float rgb2[3];
+            if (!(w2 && bc2_smoke_parse_color(w2, rgb) && w3 && bc2_smoke_parse_color(w3, rgb2))) {
+                lstrcpynA(out, "Usage: /smoke duo <young color> <old color>  (e.g. duo pumpkin blood)", out_size);
+                return 1;
+            }
+            EnterCriticalSection(&g_cmd_cs);
+            memcpy(g_rgb, rgb, 12);
+            memcpy(g_rgb + 3, rgb2, 12);
+            lstrcpynA(g_wish, w2, sizeof(g_wish));
+            lstrcpynA(g_wish2, w3, sizeof(g_wish2));
+            g_mode = MODE_DUO;
+            g_active = 1;
+            g_pending = 1;
+            LeaveCriticalSection(&g_cmd_cs);
+            if (ini[0]) {
+                WritePrivateProfileStringA("smoke", "color", w2, ini);
+                WritePrivateProfileStringA("smoke", "color2", w3, ini);
+                WritePrivateProfileStringA("smoke", "mode", "duo", ini);
+            }
+            _snprintf_s(out, out_size, _TRUNCATE, "smoke: duo %s -> %s (young -> old particles; scanning on the next tick)", w2, w3);
+            return 1;
+        }
         if (_stricmp(w1, "per") == 0) {
             /* "/smoke per [N]": every grenade effect its own colour of an N-hue palette (r259 per-instance hook) */
             long np = PER_DEF_PAL;
@@ -1020,6 +1074,6 @@ int bc2_smoke_command(const char *args, char *out, int out_size)
         _snprintf_s(out, out_size, _TRUNCATE, "smoke: %s (scanning on the next tick; /smoke status for counts)", a);
         return 1;
     }
-    lstrcpynA(out, "Usage: /smoke <color>|#rrggbb | halloween | per [N] | rainbow [s] | psycho [s] | pulse <color> [s] | off | status | alpha <0..1|orig>", out_size);
+    lstrcpynA(out, "Usage: /smoke <color>|#rrggbb | halloween | duo <c1> <c2> | per [N] | rainbow [s] | psycho [s] | pulse <color> [s] | off | status | alpha <0..1|orig>", out_size);
     return 1;
 }
