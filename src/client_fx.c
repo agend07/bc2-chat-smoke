@@ -67,7 +67,7 @@ static short g_sorted[FX_MAX_TPL];   /* templates with colour objects, by short 
 static fx_obj g_obj[FX_MAX_OBJ];
 static int g_nobj;
 static int g_scan_new_from, g_logged_roots;
-static DWORD g_fx_scans, g_fx_last_scan;
+static DWORD g_fx_scans, g_fx_last_scan, g_fx_scan_t0;
 static int g_ev_hist[16], g_ev_other;         /* evaluator types under colour processors (diagnostic, per level) */
 static volatile LONG g_dirty;                 /* tables changed: apply must run */
 /* mailbox */
@@ -296,6 +296,7 @@ void bc2_fx_scan_begin(void)
     if (!g_fx_ready)
         return;
     EnterCriticalSection(&g_fx_cs);   /* held until scan_end */
+    g_fx_scan_t0 = GetTickCount();
     for (i = 0; i < g_nobj; i++)      /* forget objects that changed under us (freed / rewritten) */
         if (obj_alive(&g_obj[i]))
             g_obj[j++] = g_obj[i];
@@ -437,8 +438,8 @@ void bc2_fx_scan_end(void)
                 strcat_s(hist, sizeof(hist), one);
             }
         _snprintf_s(line, sizeof(line), _TRUNCATE,
-                    "scan #%lu: %d docs, %d new colour templates (%d kept), %d colour obj, %d listed; colour evaluator types:%s%s",
-                    (unsigned long)g_fx_scans, g_ndocs_seen, nnew, g_ntpl, g_nobj, g_nsorted, hist, g_ev_other ? " +other" : "");
+                    "scan #%lu (%lu ms, whole RW scan incl. smoke): %d docs, %d new colour templates (%d kept), %d colour obj, %d listed; colour evaluator types:%s%s",
+                    (unsigned long)g_fx_scans, (unsigned long)(g_fx_last_scan - g_fx_scan_t0), g_ndocs_seen, nnew, g_ntpl, g_nobj, g_nsorted, hist, g_ev_other ? " +other" : "");
         flog(line);
     }
     InterlockedExchange(&g_dirty, 1);
@@ -512,19 +513,20 @@ static void ini_path(char *out, DWORD size)
 #endif
 }
 
-static void ini_save_locked(void)   /* g_fx_cmd_cs held */
+/* rewrite [fx] from a snapshot of the rules (taken under g_fx_cmd_cs; the file I/O runs outside it) */
+static void ini_save(const fx_rule *rules, int nrules)
 {
     char ini[MAX_PATH], buf[FX_MAX_RULES * (FX_KEY + 26) + 2];
     int i, pos = 0;
     ini_path(ini, MAX_PATH);
     if (!ini[0])
         return;
-    if (!g_nrules) {
+    if (!nrules) {
         WritePrivateProfileStringA("fx", NULL, NULL, ini);
         return;
     }
-    for (i = 0; i < g_nrules; i++)
-        pos += _snprintf_s(buf + pos, sizeof(buf) - pos, _TRUNCATE, "%s=%s", g_rules[i].key, g_rules[i].wish) + 1;
+    for (i = 0; i < nrules; i++)
+        pos += _snprintf_s(buf + pos, sizeof(buf) - pos, _TRUNCATE, "%s=%s", rules[i].key, rules[i].wish) + 1;
     buf[pos] = 0;
     WritePrivateProfileSectionA("fx", buf, ini);
 }
@@ -650,7 +652,8 @@ int bc2_fx_command(const char *args, char *out, int out_size)
 {
     char a[96], *w1, *w2 = NULL, *w3 = NULL;
     float rgb[3];
-    int i;
+    fx_rule snap[FX_MAX_RULES];
+    int i, nsnap;
     fx_ready();
     strncpy_s(a, sizeof(a), args ? args : "", _TRUNCATE);
     w1 = a;
@@ -709,8 +712,8 @@ int bc2_fx_command(const char *args, char *out, int out_size)
         EnterCriticalSection(&g_fx_cmd_cs);
         g_nrules = 0;
         g_pending = 1;
-        ini_save_locked();
         LeaveCriticalSection(&g_fx_cmd_cs);
+        ini_save(NULL, 0);
         lstrcpynA(out, "fx: off, all emitters restored on the next tick", out_size);
         return 1;
     }
@@ -741,8 +744,10 @@ int bc2_fx_command(const char *args, char *out, int out_size)
         g_pending = 1;
         if (!off && g_nsorted == 0)
             g_force_scan = 1;
-        ini_save_locked();
+        memcpy(snap, g_rules, sizeof(snap));
+        nsnap = g_nrules;
         LeaveCriticalSection(&g_fx_cmd_cs);
+        ini_save(snap, nsnap);
         if (off)
             _snprintf_s(out, out_size, _TRUNCATE, found >= 0 ? "fx: %s restored on the next tick" : "fx: no rule '%s'", w1);
         else
