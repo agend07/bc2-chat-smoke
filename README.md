@@ -134,8 +134,8 @@ by hand in that case.
 - Steam `BFBC2Game.exe` (under `steamapps\common`), SHA-256
   `22e96001382eb847d3ab0a02b59ec7bb79ba47e04146e74c6c49e38465f38c96`, supported since 0.1.2. It is a separate
   compilation of the same game version (SteamStub-wrapped), so its addresses differ; the dll carries both address sets
-  and picks the matching one at start-up (the log says `exe profile: retail` or `exe profile: steam`). The Steam
-  addresses were derived offline from that exe and are **not yet confirmed in a live game**: reports welcome.
+  and picks the matching one at start-up (the log says `exe profile: retail` or `exe profile: steam`). Confirmed
+  in a live game by a Steam player (all commands, including `/smoke per`).
   Check your exe with `certutil -hashfile BFBC2Game.exe SHA256`.
 - The dll checks the expected vtable bytes first and stays inactive on any other exe (the log then says
   `unknown exe (PE stamp ..., neither retail nor Steam); chat hooks inactive`). Nothing is hooked in that case.
