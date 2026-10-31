@@ -29,6 +29,7 @@
 #include <math.h>
 #include "client_smoke.h"
 #include "client_smoke_hook.h"
+#include "client_fx.h"
 #include "bc2_exe.h"
 
 #ifndef BC2_CHAT_APPDIR
@@ -429,15 +430,17 @@ static void scan_region(const unsigned char *base, SIZE_T size, int *found)
     SIZE_T off;
     const DWORD vt_doc = VT_EMITTER_DOC, vt_pcid = VT_PCID;   /* hot loop: read the profile once */
     __try {
-        for (off = 0; off + OBJ_SIZE <= size && g_nobjs < MAX_OBJS; off += 4) {
+        for (off = 0; off + OBJ_SIZE <= size; off += 4) {   /* no early stop on a full smoke table: /fx needs every document */
             DWORD w;
             int k;
             memcpy(&w, base + off, 4);
             if (w == vt_doc) {
-                try_document((DWORD)(UINT_PTR)(base + off), found);
+                bc2_fx_scan_doc((DWORD)(UINT_PTR)(base + off));
+                if (g_nobjs < MAX_OBJS)
+                    try_document((DWORD)(UINT_PTR)(base + off), found);
                 continue;
             }
-            if (w != vt_pcid)
+            if (w != vt_pcid || g_nobjs >= MAX_OBJS)
                 continue;
             k = bc2_smoke_match(base + off);
             if (!k || known((DWORD)(UINT_PTR)(base + off)))
@@ -818,6 +821,7 @@ void bc2_smoke_tick(void)
         g_nobjs = 0;                          /* old level's objects are gone */
         g_mgr_change_tick = now;
         g_level_scans_left = mgr ? 2 : 0;     /* 4 s and 20 s after the new manager appears */
+        bc2_fx_level(mgr);
         wsprintfA(line, "emitter manager -> %08lx (%s)", (unsigned long)mgr, mgr ? "rescan scheduled" : "no level");
         slog(line);
     }
@@ -850,14 +854,20 @@ void bc2_smoke_tick(void)
     else if (g_level_scans_left == 1 && now - g_mgr_change_tick >= LEVEL_SCAN_REPEAT_MS) { g_level_scans_left = 0; do_scan = 1; }
     if (s_active && mgr && g_nobjs == 0 && now - g_last_scan_tick >= PERIODIC_SCAN_MS)
         do_scan = 1;  /* nothing found yet (lazy allocation?) -> keep looking, slowly; never sweep once objects are known */
+    if (mgr && bc2_fx_scan_wanted(now))
+        do_scan = 1;  /* /fx: a rule or a list with nothing known yet */
     if (do_scan && mgr) {
         drop_dead();
+        bc2_fx_scan_begin();
         found = scan_all();
+        bc2_fx_scan_end();
         wsprintfA(line, "scan #%lu: %d new, %d known, %lu ms", (unsigned long)g_scan_count, found, g_nobjs, (unsigned long)g_last_scan_ms);
         slog(line);
     }
-    if (mgr)
+    if (mgr) {
         apply_all();
+        bc2_fx_apply();
+    }
     per_publish();   /* after scan / drop_dead / level change; no-op unless the set, palette or mode changed */
     LeaveCriticalSection(&g_cs);
 }

@@ -32,4 +32,7 @@ int bc2_chat_is_muted(const char *sender, const char *first_word);
 int bc2_chat_is_hashed(const char *sender);
 void bc2_chat_hash_text(char *s, unsigned len);
 
+/* Append one line to the chat log file (logs\chat_<pid>.log) and OutputDebugString; any thread. */
+void bc2_chat_log(const char *text);
+
 #endif

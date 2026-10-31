@@ -10,6 +10,7 @@
 #endif
 #include "client_smoke.h"
 #include "client_smoke_hook.h"
+#include "client_fx.h"
 #include "bc2_exe.h"
 
 void bc2_chat_selftest_init(void);
@@ -278,6 +279,88 @@ int main(int argc, char **argv)
         bc2_smoke_per_test_set_known(NULL, NULL, 0, 0);
     }
     check(bc2_chat_command("/smoke off", out, sizeof(out)) == 1 && strstr(out, "off"), "/smoke off");
+
+    /* /fx: pure helpers, then a fake EmitterDocument -> template -> processor chain -> colour object in our own memory */
+    {
+        char sn[48];
+        float t[3];
+        static __declspec(align(16)) unsigned char pcid[0x50], pcid_s[0x50], pa[0x40], pb[0x40], pc[0x40], data[0xF0],
+            data_s[0xF0], doc[0x40], doc_s[0x40];
+        static const char *path_fx = "FX/Weapons/Misc/Tracer/Em_Tracer_Rifle_01";
+        static const char *path_smoke = "FX/Weapons/Misc/SmokeGrenade_L/Em_SmokeGrenade_Vapor_L_01";
+        const float c1[3] = { 0.5f, 0.4f, 0.2f }, c0[3] = { 0.25f, 0.25f, 0.25f };
+        bc2_fx_node nodes[8];
+        DWORD w;
+        int n;
+#define PUT(buf, off, v) do { w = (DWORD)(UINT_PTR)(v); memcpy((buf) + (off), &w, 4); } while (0)
+        bc2_fx_short_name("FX/Weapons/Misc/Tracer/Em_Tracer_Rifle_01", sn, sizeof(sn));
+        check(strcmp(sn, "tracer_rifle_01") == 0, "fx short name: last component, Em_ dropped, lower-case");
+        bc2_fx_short_name("Plain", sn, sizeof(sn));
+        check(strcmp(sn, "plain") == 0, "fx short name: no path");
+        bc2_fx_tint((const float[]){ 1.0f, 0.0f, 0.0f }, c1, t);
+        check(t[0] == 0.5f && t[1] == 0.0f && t[2] == 0.0f, "fx tint: wish hue, original brightness");
+        bc2_fx_tint((const float[]){ 1.0f, 0.5f, 0.0f }, (const float[]){ 3.0f, 0.0f, 0.0f }, t);
+        check(t[0] == 1.0f && t[1] == 0.5f && t[2] == 0.0f, "fx tint: HDR original clamps to the wish");
+        check(bc2_fx_key_ok("tracer") && bc2_fx_key_ok("weapons/") && bc2_fx_key_ok("Muzzle_AK"), "fx key: valid names");
+        check(!bc2_fx_key_ok("list") && !bc2_fx_key_ok("off") && !bc2_fx_key_ok("") && !bc2_fx_key_ok("a=b") &&
+              !bc2_fx_key_ok("a;b") && !bc2_fx_key_ok("0123456789012345678901234567890123"), "fx key: reserved / bad chars / too long");
+
+        bc2_fx_init();   /* selftest: no ini, only the locks */
+        PUT(pcid, 0, bc2_exe()->vt_pcid); PUT(pcid, 0x14, 0xB);
+        memcpy(pcid + 0x30, c1, 12); memcpy(pcid + 0x40, c0, 12);
+        memcpy(pcid_s, pcid, sizeof(pcid));
+        PUT(pa, 0x28, 0x17); PUT(pa, 0x0C, pcid); PUT(pa, 0x20, pb);   /* UpdateColor -> our colour object */
+        PUT(pb, 0x28, 0x19); PUT(pb, 0x0C, 0); PUT(pb, 0x20, 0);       /* UpdateTransparency, no evaluator, end */
+        n = bc2_fx_walk((DWORD)(UINT_PTR)pa, nodes, 8);
+        check(n == 2 && nodes[0].pcid && nodes[0].ptype == 0x17 && !nodes[1].ev, "fx walk: colour node + plain node");
+        PUT(pb, 0x20, pa);
+        check(bc2_fx_walk((DWORD)(UINT_PTR)pa, nodes, 8) == -1, "fx walk: cycle rejected");
+        PUT(pb, 0x20, 0); PUT(pb, 0x28, 0x1234);
+        check(bc2_fx_walk((DWORD)(UINT_PTR)pa, nodes, 8) == -1, "fx walk: implausible processor type rejected");
+        PUT(pb, 0x28, 0x19);
+        check(bc2_fx_walk(0x10u, nodes, 8) == -1, "fx walk: unreadable root rejected (SEH)");
+
+        check(bc2_chat_command("/fx list", out, sizeof(out)) == 1 && strstr(out, "scanning"), "/fx list before any scan");
+        PUT(data, 0xB4, pa);
+        PUT(doc, 0, bc2_exe()->vt_emitter_doc); PUT(doc, 0x0C, path_fx); PUT(doc, 0x18, data); PUT(doc, 0x30, pa);
+        PUT(pc, 0x28, 0x17); PUT(pc, 0x0C, pcid_s); PUT(pc, 0x20, 0);
+        PUT(data_s, 0xB4, pc);
+        PUT(doc_s, 0, bc2_exe()->vt_emitter_doc); PUT(doc_s, 0x0C, path_smoke); PUT(doc_s, 0x18, data_s);
+        bc2_fx_scan_begin();
+        bc2_fx_scan_doc((DWORD)(UINT_PTR)doc);
+        bc2_fx_scan_doc((DWORD)(UINT_PTR)doc);   /* the same document twice: kept once */
+        bc2_fx_scan_doc((DWORD)(UINT_PTR)doc_s);
+        bc2_fx_scan_doc(0x10u);                  /* unreadable candidate */
+        bc2_fx_scan_end();
+        check(bc2_chat_command("/fx list", out, sizeof(out)) == 1 && strstr(out, "fx: 1,") && strstr(out, "tracer_rifle_01") &&
+              !strstr(out, "smoke"), "/fx list: the tracer, not the smoke grenade");
+        check(bc2_chat_command("/fx list zzz", out, sizeof(out)) == 1 && strstr(out, "no colour emitters matching zzz"), "/fx list filter");
+        check(bc2_chat_command("/fx list 2", out, sizeof(out)) == 1 && strstr(out, "only 1 page"), "/fx list page past the end");
+        check(bc2_chat_command("/fx tracer purple-ish", out, sizeof(out)) == 1 && strstr(out, "unknown colour"), "/fx bad colour");
+        check(bc2_chat_command("/fx list red", out, sizeof(out)) == 1 && strstr(out, "no colour"), "/fx list is a sub-command");
+        check(bc2_chat_command("/fx Tracer red", out, sizeof(out)) == 1 && strstr(out, "'tracer' -> red"), "/fx tracer red");
+        check(bc2_chat_command("/fx misc #00ff00", out, sizeof(out)) == 1, "/fx misc green (matches both)");
+        bc2_fx_apply();
+        memcpy(t, pcid + 0x30, 12);
+        check(t[0] == 0.0f && t[1] == 0.5f && t[2] == 0.0f, "fx apply: the last matching rule wins (misc -> green)");
+        check(memcmp(pcid_s + 0x30, c1, 12) == 0, "fx apply: smoke grenade template left to /smoke");
+        check(bc2_chat_command("/fx misc off", out, sizeof(out)) == 1 && strstr(out, "restored"), "/fx misc off");
+        bc2_fx_apply();
+        memcpy(t, pcid + 0x30, 12);
+        check(t[0] == 0.5f && t[1] > 0.06f && t[1] < 0.07f && t[2] == t[1], "fx apply: remaining rule tracer -> red (ff2020)");
+        check(bc2_chat_command("/fx", out, sizeof(out)) == 1 && strstr(out, "1 rule(s): tracer=red") && strstr(out, "1 patched"),
+              "/fx status");
+        memcpy(pcid + 0x34, &c0[0], 4);          /* the game changed the object under us: no write */
+        check(bc2_chat_command("/fx tracer blue", out, sizeof(out)) == 1, "/fx tracer blue");
+        bc2_fx_apply();
+        check(memcmp(pcid + 0x34, &c0[0], 4) == 0 && *(float *)(pcid + 0x30) == 0.5f, "fx apply: changed object left alone");
+        check(bc2_chat_command("/fx off", out, sizeof(out)) == 1 && strstr(out, "off"), "/fx off");
+        bc2_fx_apply();
+        check(bc2_chat_command("/fx status", out, sizeof(out)) == 1 && strstr(out, "0 rule(s)"), "/fx status after off");
+        check(bc2_chat_command("/fx bogus", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/fx usage");
+        bc2_fx_level(0);
+#undef PUT
+    }
 
     DeleteFileA(path);
     printf("%d FAIL\n", fails);

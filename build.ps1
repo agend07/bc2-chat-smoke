@@ -45,7 +45,7 @@ foreach ($d in @($build, $dist, $stage, (Join-Path $build "obj_dll"), (Join-Path
 }
 
 # ---- compile (one cmd script: vcvars32 + two cl calls; no quoting through three shells) ---------------------------
-$modules = "src\client_chat.c src\client_smoke.c src\client_smoke_hook.c"
+$modules = "src\client_chat.c src\client_smoke.c src\client_smoke_hook.c src\client_fx.c"
 $flags   = "/nologo /Brepro /O2 /W4 /GS- /Isrc /FIstandalone.h"
 $cmd = @(
     "@echo off",

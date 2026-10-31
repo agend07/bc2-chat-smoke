@@ -28,6 +28,7 @@
 #endif
 #include "version.h"
 #include "client_smoke.h"
+#include "client_fx.h"
 #include "bc2_exe.h"
 
 /* Build-time identity (the standalone bc2-chat-smoke build overrides all three, see its build.ps1):
@@ -148,6 +149,8 @@ static void chat_log(const char *text)
     WriteFile(f, line, lstrlenA(line), &written, NULL);
     CloseHandle(f);
 }
+
+void bc2_chat_log(const char *text) { chat_log(text); }
 
 static int base_dir(char *out, DWORD size)  /* %LOCALAPPDATA%\<BC2_CHAT_APPDIR> */
 {
@@ -462,8 +465,9 @@ int bc2_chat_command(const char *line, char *out, int size)
     if (cmd_is(line, "/rec", &args))      return cmd_rec(args, out, size);
 #endif
     if (cmd_is(line, "/smoke", &args))    return bc2_smoke_command(args, out, size);
+    if (cmd_is(line, "/fx", &args))       return bc2_fx_command(args, out, size);
     if (cmd_is(line, "/help", &args)) {
-        lstrcpynA(out, "/mute /unmute /mutelist  /hash /unhash /hashlist  " HELP_REC "/smoke <color|halloween|per|off|status>", size);
+        lstrcpynA(out, "/mute /unmute /mutelist  /hash /unhash /hashlist  " HELP_REC "/smoke <color|halloween|per|off>  /fx list|<name> <color>", size);
         return 1;
     }
     return 0;  /* unknown slash text goes to the server as typed */
@@ -678,6 +682,7 @@ static DWORD WINAPI monitor_thread(LPVOID arg)
     unlock();
     chat_log("monitor running (250 ms); mute/hash files loaded");
     bc2_smoke_init();
+    bc2_fx_init();
     while (!g_stop) {
         unsigned i;
         attach_pass(&logged_ui, &logged_in);
