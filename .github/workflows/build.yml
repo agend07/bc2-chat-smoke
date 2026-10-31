@@ -48,12 +48,12 @@ jobs:
         run: |
           cat > notes.md <<'EOF'
           In-game chat commands for Battlefield: Bad Company 2 (retail / Project Rome and Steam `BFBC2Game.exe`):
-          `/mute /unmute /mutelist`, `/hash /unhash /hashlist`, `/smoke <color|halloween|per|rainbow|psycho|pulse|off|status>`, `/help`.
+          `/mute /unmute /mutelist`, `/hash /unhash /hashlist`, `/smoke <color|halloween|per|rainbow|psycho|pulse|off|status>`, `/fx list|<name> <color>|off|status` (new in 0.2.0: recolour muzzle flashes, tracers, impacts, blood, fire, explosions and more by name), `/help`.
 
           **Install:** extract `msimg32.dll` next to `BFBC2Game.exe` (uninstall = delete it). Remove it before using the
           BC2 Local Replay package, whose `dinput8.dll` already contains these commands. See README.md.
 
-          **Steam build** (`22e96001...`): supported since 0.1.2, not yet confirmed in a live game; reports welcome.
+          **Steam build** (`22e96001...`): supported since 0.1.2, confirmed in a live game.
 
           **Verify:** `SHA256.txt` lists the hashes of the zip and the dll.
           EOF

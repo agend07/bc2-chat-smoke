@@ -7,12 +7,14 @@ standalone `msimg32.dll`:
 - `/hash`, `/unhash`, `/hashlist`: keep a sender visible, but turn their text into symbols.
 - `/smoke ...`: recolour smoke-grenade smoke on your screen (static colours, per-grenade palettes, rainbow, pulse,
   Halloween presets).
+- `/fx ...`: recolour other particle effects by name: muzzle flashes, tracers, impacts, blood, fire, explosions,
+  ambient effects of the map.
 - `/help`: the command list.
 
 Everything runs on your side only. Replies are shown to you alone, nothing is sent to the server, and other players
-see the normal grey smoke. Nothing on disk is modified: not the game exe, not Project Rome's `dinput8.dll`.
+see the normal colours. Nothing on disk is modified: not the game exe, not Project Rome's `dinput8.dll`.
 
-Current version: **0.1.2**. Licence: MIT (see `LICENSE`).
+Current version: **0.2.0**. Licence: MIT (see `LICENSE`).
 
 ## Install
 
@@ -49,6 +51,7 @@ chat window with the sender `[chat]`. Unknown `/text` is sent to the server exac
 | `/unhash <name>` | Remove matching entries from the hash list. |
 | `/hashlist` (alias `/hashed`) | Show the hash list. |
 | `/smoke ...` | Smoke colours, see below. |
+| `/fx ...` | Colours of other effects, see [Effect colours](#effect-colours). |
 | `/help` | One-line list of the commands. |
 
 Both lists hold up to 256 entries, are reloaded within 2 seconds after any change, and can be edited by hand: one
@@ -92,6 +95,31 @@ the objects (`/smoke status` shows the counts). Smoke colours are your own view 
 (the hook that gives each grenade effect its own colour). It is installed the first time the mode is used and left
 in place until the game exits; `/smoke off` only disables it. All other modes write nothing to code.
 
+## Effect colours
+
+`/fx` recolours the game's other particle effects. After a level loads, the dll lists every effect of that level
+whose colour it can change (about 370 on a typical map) and matches them by name: `/fx <name> <color>` recolours
+every effect whose asset path contains `<name>`, so a short word covers a whole group.
+
+| Command | Effect |
+|---|---|
+| `/fx list` | The useful groups of this level with their counts, e.g. `muzz 24, tracer 9, impact 122, blood 10, fire 38`. |
+| `/fx list <group> [page]` | The effect names in a group (`/fx list all` = every name), a few chat lines per page. |
+| `/fx <name> <color>` | Recolour every effect whose path contains `<name>` (colour names as for `/smoke`, or `#rrggbb`). |
+| `/fx <name> off` | Remove that rule; its effects get their original colours back. |
+| `/fx off` | Remove all rules, restore every effect. |
+| `/fx status` | The rules, how many effects and colour objects are known and patched. |
+
+Useful groups: `muzz` (muzzle flashes), `tracer`, `trail` (rocket and mortar trails), `impact` (bullet impacts on
+every material), `blood`, `spark`, `fire`, `explo` (explosions; `vexp` = vehicle explosions), `elec`,
+`smoke` (every smoke except the grenades), `ambient` (map effects such as sand mist, burning debris),
+`destruction`, `weapons/`. Rules can overlap; the one set last wins for an effect that matches several. They are
+saved in `config.ini` `[fx]` and re-applied after every level load.
+
+The colour keeps each effect's own brightness (glowing fire and flares stay bright) and takes its hue from your
+colour. Smoke grenades are left to `/smoke`. Like the smoke colours this is your own view only, and it writes only
+colour values into the game's effect data, never code.
+
 ## Where the files live
 
 Everything is in `%LOCALAPPDATA%\BC2ChatSmoke\` (paste that into the Explorer address bar), not in the game folder,
@@ -101,7 +129,7 @@ because the game folder under Program Files is read-only for the game:
 |---|---|
 | `muted_players.txt` | Mute list (one entry per line, `#` / `;` comments). Created empty on the first run. |
 | `hashed_players.txt` | Hash list, same format. |
-| `config.ini` | `[dll] chat=off` disables everything; `[smoke]` keys `color=`, `color2=`, `mode=`, `period=`, `per=` keep the smoke setting. |
+| `config.ini` | `[dll] chat=off` disables everything; `[smoke]` keys `color=`, `color2=`, `mode=`, `period=`, `per=` keep the smoke setting; `[fx]` holds the `/fx` rules as `<name>=<color>`. |
 | `logs\chat_<pid>.log` | One log per game process; the first line is the dll version. Attach it to bug reports. |
 
 **Migration from bc2_mute:** on the first run, if an old `muted_players.txt` lies next to the dll in the game folder
@@ -124,6 +152,9 @@ by hand in that case.
   emitters, matched by their vtable and their exact original grey values, so nothing else can match. The dll then
   writes small float colour values into those objects, re-validating each object before every write; `/smoke off`
   writes the originals back.
+- **Effect colours** (`/fx`) use the same scan: it finds the level's emitter documents (one per effect, with its
+  asset path), follows each effect's processor chain to its colour evaluator and keeps the `PolynomialColorInterpData`
+  ones. Writes are validated the same way and `/fx off` restores the originals.
 - Every read of game memory is guarded with structured exception handling (`__try`), so a vanished object cannot
   crash the game.
 
@@ -135,7 +166,7 @@ by hand in that case.
   `22e96001382eb847d3ab0a02b59ec7bb79ba47e04146e74c6c49e38465f38c96`, supported since 0.1.2. It is a separate
   compilation of the same game version (SteamStub-wrapped), so its addresses differ; the dll carries both address sets
   and picks the matching one at start-up (the log says `exe profile: retail` or `exe profile: steam`). Confirmed
-  in a live game by a Steam player (all commands, including `/smoke per`).
+  in a live game by a Steam player (all commands, including `/smoke per`). `/fx` (0.2.0) needs no new game address, but has not been tried on Steam yet; reports welcome.
   Check your exe with `certutil -hashfile BFBC2Game.exe SHA256`.
 - The dll checks the expected vtable bytes first and stays inactive on any other exe (the log then says
   `unknown exe (PE stamp ..., neither retail nor Steam); chat hooks inactive`). Nothing is hooked in that case.
