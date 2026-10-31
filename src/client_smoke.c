@@ -20,6 +20,7 @@
  * Scan: committed private RW regions, 4-byte steps for the two vtable words, then the content checks; runs on the chat
  * monitor thread under __try per region (own stack excluded). Writes are small float stores into live RW heap objects,
  * re-validated (vtable / name + expected current values) before every write; /smoke off restores the originals.
+ * The addresses above are the retail build's; the running build's come from bc2_exe() (Steam build, r300).
  */
 #include <windows.h>
 #include <string.h>
@@ -28,6 +29,7 @@
 #include <math.h>
 #include "client_smoke.h"
 #include "client_smoke_hook.h"
+#include "bc2_exe.h"
 
 #ifndef BC2_CHAT_APPDIR
 #define BC2_CHAT_APPDIR      "BC2Replay"      /* see client_chat.c */
@@ -38,17 +40,17 @@
 #ifndef BC2_SMOKE_DEFAULT
 #define BC2_SMOKE_DEFAULT    ""   /* /smoke args applied on the very first run (no [smoke] color= yet); "" = none */
 #endif
-#define VT_PCID              0x0145BE04u
+#define VT_PCID              (bc2_exe()->vt_pcid)          /* retail 0x0145BE04 */
 #define OFF_EVAL_TYPE        0x14u
 #define OFF_COLOR1           0x30u
 #define OFF_COLOR0           0x40u
 #define OBJ_SIZE             0x50u
-#define VT_EMITTER_DOC       0x0145AE6Cu
+#define VT_EMITTER_DOC       (bc2_exe()->vt_emitter_doc)   /* retail 0x0145AE6C */
 #define OFF_DOC_NAME         0x0Cu
 #define OFF_DOC_TPL          0x18u
 #define OFF_TPL_NAME         0xB8u
 #define TPL_SIZE             0xF0u
-#define ADDR_EMITTER_MGR     0x01575A50u
+#define ADDR_EMITTER_MGR     (bc2_exe()->emitter_mgr_ptr)  /* retail 0x01575A50 */
 #define MAX_OBJS             64
 #define LEVEL_SCAN_DELAY_MS  4000u
 #define LEVEL_SCAN_REPEAT_MS 20000u
@@ -425,16 +427,17 @@ static void try_document(DWORD addr, int *found)
 static void scan_region(const unsigned char *base, SIZE_T size, int *found)
 {
     SIZE_T off;
+    const DWORD vt_doc = VT_EMITTER_DOC, vt_pcid = VT_PCID;   /* hot loop: read the profile once */
     __try {
         for (off = 0; off + OBJ_SIZE <= size && g_nobjs < MAX_OBJS; off += 4) {
             DWORD w;
             int k;
             memcpy(&w, base + off, 4);
-            if (w == VT_EMITTER_DOC) {
+            if (w == vt_doc) {
                 try_document((DWORD)(UINT_PTR)(base + off), found);
                 continue;
             }
-            if (w != VT_PCID)
+            if (w != vt_pcid)
                 continue;
             k = bc2_smoke_match(base + off);
             if (!k || known((DWORD)(UINT_PTR)(base + off)))

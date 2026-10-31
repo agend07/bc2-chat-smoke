@@ -5,6 +5,8 @@
  *   UI event dispatcher   vtable 0x01440804 slot 1 = 0x009640D0  (incoming chat: cat 0x21, code 0x1A)
  *   chat input submit     vtable 0x0142A3D0 slot 0 = 0x00751380  (outgoing: __fastcall(this, edx, channel, eastl::string16*))
  *   (the HUD subobject hook of bc2_mute, vtable 0x0142B794, is NOT installed: it never sees chat code 0x1A, r254)
+ * (addresses of the retail build; the Steam build's equivalents and the selection live in the profile table below,
+ * see bc2_exe.h, r300)
  * Each hook swaps the INSTANCE's vtable pointer for a clone whose one slot points here; no .text byte changes, so the
  * recorder's site gate is unaffected. A 250 ms monitor thread re-attaches whenever the UI singleton (0x019A4CA8)
  * recreates the objects. Incoming chat message (code 0x1A, vtable 0x141C038, size 0x78, stack object built by
@@ -26,6 +28,7 @@
 #endif
 #include "version.h"
 #include "client_smoke.h"
+#include "bc2_exe.h"
 
 /* Build-time identity (the standalone bc2-chat-smoke build overrides all three, see its build.ps1):
  * BC2_CHAT_APPDIR = folder under %LOCALAPPDATA% for the lists, config.ini and logs; BC2_CHAT_TAG = sender of the
@@ -40,15 +43,57 @@
 #define BC2_CHAT_LOG_PREFIX  "dinput8 proxy"
 #endif
 
-#define ADDR_UI_SINGLETON_PTR        0x019A4CA8u
-#define OFFSET_UI_EVENT_SUBOBJECT    0x00082AF8u
+#define OFFSET_UI_EVENT_SUBOBJECT    0x00082AF8u   /* same in both builds (r300) */
 #define OFFSET_UI_TEXTBOX_MGR_PTR    0x00082D0Cu
-#define VTABLE_UI_ROOT_EXPECTED      0x01440830u
-#define VTABLE_UI_EVENT_EXPECTED     0x01440804u
-#define FN_ON_UI_EVENT_EXPECTED      0x009640D0u
-#define VTABLE_CHAT_INPUT_EXPECTED   0x0142A3D0u
-#define FN_ON_CHAT_INPUT_EXPECTED    0x00751380u
-#define VTABLE_MSG_CHAT              0x0141C038u
+
+/* r300 per-build addresses, see bc2_exe.h. Column order = bc2_exe_profile. */
+static const bc2_exe_profile EXE_PROFILES[] = {
+    /* retail / Project Rome 3911fcc8... (bc2_mute + r252..r259 facts) */
+    { "retail", 0x019A4CA8u, 0x01440830u, 0x01440804u, 0x009640D0u, 0x0142A3D0u, 0x00751380u, 0x0141C038u,
+      0x0145BE04u, 0x0145AE6Cu, 0x01575A50u, 0x00B29362u, 0x00B26FB0u },
+    /* Steam 22e96001... (SteamStub 2.1), mapped from the decrypted .text on 2026-10-31 */
+    { "steam",  0x0198D9B8u, 0x01443398u, 0x0144336Cu, 0x0096BC60u, 0x0142CF38u, 0x00758F10u, 0x0141EBA0u,
+      0x014B895Cu, 0x014B78D0u, 0x01BE13E0u, 0x0119C402u, 0x0119A050u },
+};
+static const bc2_exe_profile *volatile g_exe = &EXE_PROFILES[0];
+static volatile LONG g_exe_known;
+
+const bc2_exe_profile *bc2_exe(void) { return g_exe; }
+int bc2_exe_known(void) { return g_exe_known != 0; }
+
+const bc2_exe_profile *bc2_exe_detect(void)
+{
+    int i;
+    for (i = 0; i < (int)(sizeof(EXE_PROFILES) / sizeof(EXE_PROFILES[0])); i++) {
+        const bc2_exe_profile *p = &EXE_PROFILES[i];
+        int ok = 0;
+        __try {   /* .rdata only: valid on the Steam exe before SteamStub has decrypted .text */
+            ok = *(DWORD *)(UINT_PTR)(p->vt_ui_event + 4) == p->fn_ui_event &&
+                 *(DWORD *)(UINT_PTR)(p->vt_chat_input) == p->fn_chat_input;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            ok = 0;
+        }
+        if (ok) {
+            g_exe = p;
+            InterlockedExchange(&g_exe_known, 1);
+            return p;
+        }
+    }
+    return NULL;
+}
+
+#ifdef BC2_CHAT_SELFTEST
+int bc2_exe_test_select(const char *name)
+{
+    int i;
+    for (i = 0; i < (int)(sizeof(EXE_PROFILES) / sizeof(EXE_PROFILES[0])); i++)
+        if (lstrcmpA(EXE_PROFILES[i].name, name) == 0) {
+            g_exe = &EXE_PROFILES[i];
+            return 1;
+        }
+    return 0;
+}
+#endif
 #define MSG_SEG_BEGIN                0x20u
 #define MSG_SEG_END                  0x24u
 #define MSG_SENDER                   0x6Cu
@@ -426,8 +471,8 @@ int bc2_chat_command(const char *line, char *out, int size)
 
 /* ---- hooks (game) ---- */
 #ifndef BC2_CHAT_SELFTEST
-static fn_ui_event g_orig_ui_event = (fn_ui_event)FN_ON_UI_EVENT_EXPECTED;
-static fn_chat_submit g_orig_submit = (fn_chat_submit)FN_ON_CHAT_INPUT_EXPECTED;
+static fn_ui_event g_orig_ui_event;      /* set from the detected profile before any hook goes in */
+static fn_chat_submit g_orig_submit;
 static DWORD g_clone_ui[8], g_clone_submit[8];
 
 static void show_local(const char *text)
@@ -437,7 +482,7 @@ static void show_local(const char *text)
     estring8 words[1];
     DWORD ui_root = 0;
     __try {
-        ui_root = *(DWORD *)ADDR_UI_SINGLETON_PTR;
+        ui_root = *(DWORD *)(UINT_PTR)bc2_exe()->ui_singleton_ptr;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         ui_root = 0;
     }
@@ -447,7 +492,7 @@ static void show_local(const char *text)
     word.b = text; word.e = text + strlen(text); word.cap = word.e + 1;
     sender.b = FEEDBACK_TAG; sender.e = FEEDBACK_TAG + sizeof(FEEDBACK_TAG) - 1; sender.cap = sender.e + 1;
     words[0] = word;
-    *(DWORD *)(msg + 0x00) = VTABLE_MSG_CHAT;
+    *(DWORD *)(msg + 0x00) = bc2_exe()->vt_msg_chat;
     *(DWORD *)(msg + MSG_SEG_BEGIN) = (DWORD)(UINT_PTR)&words[0];
     *(DWORD *)(msg + MSG_SEG_END) = (DWORD)(UINT_PTR)&words[1];
     *(DWORD *)(msg + 0x28) = (DWORD)(UINT_PTR)&words[1];
@@ -551,22 +596,15 @@ static void __fastcall hook_submit(void *self, void *edx, int channel, estring16
     g_orig_submit(self, NULL, channel, text);
 }
 
-static int expected_client(void)
-{
-    __try {
-        return *(DWORD *)(VTABLE_UI_EVENT_EXPECTED + 4) == FN_ON_UI_EVENT_EXPECTED &&
-               *(DWORD *)(VTABLE_CHAT_INPUT_EXPECTED) == FN_ON_CHAT_INPUT_EXPECTED;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return 0;
-    }
-}
-
 static void prepare_clones(void)
 {
     /* each clone copies RTTI (-4) + 5 slots; index 0 = RTTI, index 1 = slot 0 */
-    memcpy(g_clone_ui, (const void *)(VTABLE_UI_EVENT_EXPECTED - 4), 6 * sizeof(DWORD));
+    const bc2_exe_profile *x = bc2_exe();
+    g_orig_ui_event = (fn_ui_event)(UINT_PTR)x->fn_ui_event;
+    g_orig_submit = (fn_chat_submit)(UINT_PTR)x->fn_chat_input;
+    memcpy(g_clone_ui, (const void *)(UINT_PTR)(x->vt_ui_event - 4), 6 * sizeof(DWORD));
     g_clone_ui[2] = (DWORD)(UINT_PTR)hook_ui_event;
-    memcpy(g_clone_submit, (const void *)(VTABLE_CHAT_INPUT_EXPECTED - 4), 6 * sizeof(DWORD));
+    memcpy(g_clone_submit, (const void *)(UINT_PTR)(x->vt_chat_input - 4), 6 * sizeof(DWORD));
     g_clone_submit[1] = (DWORD)(UINT_PTR)hook_submit;
 }
 
@@ -575,13 +613,14 @@ static void attach_pass(int *logged_ui, int *logged_in)
     static const int channels[4] = { 3, 5, 6, 7 };
     char line[160];
     int i;
+    const bc2_exe_profile *x = bc2_exe();
     __try {
-        DWORD ui_root = *(DWORD *)ADDR_UI_SINGLETON_PTR, mgr;
+        DWORD ui_root = *(DWORD *)(UINT_PTR)x->ui_singleton_ptr, mgr;
         DWORD *vt;
-        if (!ui_root || *(DWORD *)(UINT_PTR)ui_root != VTABLE_UI_ROOT_EXPECTED)
+        if (!ui_root || *(DWORD *)(UINT_PTR)ui_root != x->vt_ui_root)
             return;
         vt = (DWORD *)(UINT_PTR)(ui_root + OFFSET_UI_EVENT_SUBOBJECT);
-        if (*vt == VTABLE_UI_EVENT_EXPECTED) {
+        if (*vt == x->vt_ui_event) {
             InterlockedExchange((volatile LONG *)vt, (LONG)(UINT_PTR)&g_clone_ui[1]);
             if (!*logged_ui) {
                 *logged_ui = 1;
@@ -596,7 +635,7 @@ static void attach_pass(int *logged_ui, int *logged_in)
                 if (!handler)
                     continue;
                 vt = (DWORD *)(UINT_PTR)handler;
-                if (*vt == VTABLE_CHAT_INPUT_EXPECTED) {
+                if (*vt == x->vt_chat_input) {
                     InterlockedExchange((volatile LONG *)vt, (LONG)(UINT_PTR)&g_clone_submit[1]);
                     if (!*logged_in) {
                         *logged_in = 1;
@@ -613,12 +652,25 @@ static void attach_pass(int *logged_ui, int *logged_in)
 static DWORD WINAPI monitor_thread(LPVOID arg)
 {
     int logged_ui = 0, logged_in = 0;
+    const bc2_exe_profile *x;
+    char line[120];
+    DWORD stamp = 0;
     (void)arg;
     Sleep(500);
-    if (!expected_client()) {
-        chat_log("vtable bytes differ from the retail exe; chat hooks inactive");
+    __try {   /* PE TimeDateStamp of the exe in memory (headers are never encrypted): for bug reports */
+        const BYTE *mz = (const BYTE *)GetModuleHandleA(NULL);
+        stamp = *(const DWORD *)(mz + *(const LONG *)(mz + 0x3C) + 8);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        stamp = 0;
+    }
+    x = bc2_exe_detect();
+    if (!x) {
+        wsprintfA(line, "unknown exe (PE stamp %08lx, neither retail nor Steam); chat hooks inactive", (unsigned long)stamp);
+        chat_log(line);
         return 0;
     }
+    wsprintfA(line, "exe profile: %s (PE stamp %08lx)", x->name, (unsigned long)stamp);
+    chat_log(line);
     prepare_clones();
     lock();
     load_locked(&g_mute, 1);

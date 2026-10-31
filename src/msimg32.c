@@ -1,4 +1,5 @@
-/* bc2-chat-smoke: msimg32.dll proxy loader for Battlefield: Bad Company 2 (retail / Project Rome BFBC2Game.exe).
+/* bc2-chat-smoke: msimg32.dll proxy loader for Battlefield: Bad Company 2 (retail / Project Rome and Steam
+ * BFBC2Game.exe).
  *
  * The exe imports msimg32.dll and Windows resolves it from the exe's folder first, so this file is loaded at
  * startup. It forwards the five system exports to the real %SystemRoot%\System32\msimg32.dll (naked jmp stubs,
@@ -126,7 +127,7 @@ BOOL WINAPI DllMain(HINSTANCE self, DWORD reason, LPVOID reserved)
         if (is_game_client()) {
             log_line("bc2-chat-smoke " BC2_VERSION_STRING " in BFBC2Game.exe");
             migrate_old_mute_list(self);
-            bc2_client_chat_attach();   /* starts the monitor thread; the hooks go in only on the retail exe */
+            bc2_client_chat_attach();   /* starts the monitor thread; hooks only on a known exe (bc2_exe.h) */
         }
     } else if (reason == DLL_PROCESS_DETACH) {
         bc2_client_chat_detach();       /* stop flag only, never wait */

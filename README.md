@@ -1,6 +1,6 @@
 # bc2-chat-smoke
 
-In-game chat commands for **Battlefield: Bad Company 2** (retail / Project Rome `BFBC2Game.exe`), packed into one
+In-game chat commands for **Battlefield: Bad Company 2** (retail / Project Rome and Steam `BFBC2Game.exe`), packed into one
 standalone `msimg32.dll`:
 
 - `/mute`, `/unmute`, `/mutelist`: hide chat from players or keywords you do not want to read.
@@ -12,7 +12,7 @@ standalone `msimg32.dll`:
 Everything runs on your side only. Replies are shown to you alone, nothing is sent to the server, and other players
 see the normal grey smoke. Nothing on disk is modified: not the game exe, not Project Rome's `dinput8.dll`.
 
-Current version: **0.1.1**. Licence: MIT (see `LICENSE`).
+Current version: **0.1.2**. Licence: MIT (see `LICENSE`).
 
 ## Install
 
@@ -131,11 +131,14 @@ by hand in that case.
 
 - Retail / Project Rome `BFBC2Game.exe`, SHA-256
   `3911fcc8914b0158c434cee36f19295316e715d4c9a0e70c857e8c39e3d54258`.
-- **Not yet supported: the Steam build** (`BFBC2Game.exe` SHA-256 `22e96001...`, under `steamapps\common`). It is a
-  different compilation with different addresses; the dll detects it and stays inactive. Support is planned once the
-  addresses for that build are known. Check your exe with `certutil -hashfile BFBC2Game.exe SHA256`.
+- Steam `BFBC2Game.exe` (under `steamapps\common`), SHA-256
+  `22e96001382eb847d3ab0a02b59ec7bb79ba47e04146e74c6c49e38465f38c96`, supported since 0.1.2. It is a separate
+  compilation of the same game version (SteamStub-wrapped), so its addresses differ; the dll carries both address sets
+  and picks the matching one at start-up (the log says `exe profile: retail` or `exe profile: steam`). The Steam
+  addresses were derived offline from that exe and are **not yet confirmed in a live game**: reports welcome.
+  Check your exe with `certutil -hashfile BFBC2Game.exe SHA256`.
 - The dll checks the expected vtable bytes first and stays inactive on any other exe (the log then says
-  `vtable bytes differ from the retail exe; chat hooks inactive`). Nothing is hooked in that case.
+  `unknown exe (PE stamp ..., neither retail nor Steam); chat hooks inactive`). Nothing is hooked in that case.
 - 32-bit (x86) only, like the game. Windows 10/11.
 
 ## Build from source
@@ -180,14 +183,14 @@ the zip and `SHA256.txt` on every tag `v*`.
 Compare it with the hash of what you downloaded:
 
 ```powershell
-Get-FileHash .\bc2-chat-smoke-0.1.1.zip -Algorithm SHA256
+Get-FileHash .\bc2-chat-smoke-0.1.2.zip -Algorithm SHA256
 Get-FileHash .\msimg32.dll -Algorithm SHA256
 ```
 
 or
 
 ```bat
-certutil -hashfile bc2-chat-smoke-0.1.1.zip SHA256
+certutil -hashfile bc2-chat-smoke-0.1.2.zip SHA256
 certutil -hashfile msimg32.dll SHA256
 ```
 

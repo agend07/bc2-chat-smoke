@@ -3,6 +3,6 @@
 #ifndef BC2_VERSION_H
 #define BC2_VERSION_H
 
-#define BC2_VERSION_STRING "0.1.1"
+#define BC2_VERSION_STRING "0.1.2"
 
 #endif

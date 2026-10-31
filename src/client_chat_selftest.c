@@ -10,6 +10,7 @@
 #endif
 #include "client_smoke.h"
 #include "client_smoke_hook.h"
+#include "bc2_exe.h"
 
 void bc2_chat_selftest_init(void);
 
@@ -143,6 +144,22 @@ int main(int argc, char **argv)
         check(bc2_smoke_match(obj) == 0, "one color byte off = no match");
         obj[0x44] ^= 1; obj[0x14] = 0xA;
         check(bc2_smoke_match(obj) == 0, "wrong evaluator type = no match");
+        obj[0x14] = 0xB;
+        /* r300 exe profiles: default = retail; the Steam profile switches the vtable the matcher expects */
+        check(bc2_exe() && lstrcmpA(bc2_exe()->name, "retail") == 0 && bc2_exe()->vt_pcid == vt && !bc2_exe_known(),
+              "exe profile: retail by default, not yet detected");
+        check(bc2_exe_test_select("steam") && bc2_exe()->vt_pcid == 0x014B895Cu && bc2_smoke_match(obj) == 0,
+              "exe profile steam: the retail PCID vtable no longer matches");
+        {
+            const DWORD svt = 0x014B895Cu;
+            memcpy(obj, &svt, 4);
+            check(bc2_smoke_match(obj) == 1, "exe profile steam: match vapor object with the Steam vtable");
+            memcpy(obj, &vt, 4);
+        }
+        check(bc2_exe()->hook_site_call == 0x0119C402u && ((bc2_exe()->hook_site_call - 2) & 7u) == 0 &&
+              bc2_exe()->emitter_mgr_ptr == 0x01BE13E0u, "exe profile steam: hook site 8-byte window aligned, emitter manager");
+        check(bc2_exe_test_select("retail") && !bc2_exe_test_select("gog") && bc2_smoke_match(obj) == 1 &&
+              ((bc2_exe()->hook_site_call - 2) & 7u) == 0, "exe profile: back to retail, unknown name refused");
     }
     check(bc2_chat_command("/smoke plaid", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/smoke bad color = usage");
     check(bc2_chat_command("/smoke red", out, sizeof(out)) == 1 && strstr(out, "smoke: red"), "/smoke red accepted");
