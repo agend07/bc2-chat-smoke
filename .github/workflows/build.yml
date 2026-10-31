@@ -1,0 +1,59 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build msimg32.dll, run the selftest, package
+        shell: pwsh
+        run: ./build.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bc2-chat-smoke-windows
+          path: |
+            dist/*.zip
+            dist/msimg32.dll
+            dist/SHA256.txt
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: bc2-chat-smoke-windows
+          path: release
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<'EOF'
+          In-game chat commands for Battlefield: Bad Company 2 (retail / Project Rome `BFBC2Game.exe`):
+          `/mute /unmute /mutelist`, `/hash /unhash /hashlist`, `/smoke <color|halloween|per|rainbow|psycho|pulse|off|status>`, `/help`.
+
+          **Install:** extract `msimg32.dll` next to `BFBC2Game.exe` (uninstall = delete it). Remove it before using the
+          BC2 Local Replay package, whose `dinput8.dll` already contains these commands. See README.md.
+
+          **Verify:** `SHA256.txt` lists the hashes of the zip and the dll.
+          EOF
+          cat release/SHA256.txt
+          gh release create "$TAG" --verify-tag --title "bc2-chat-smoke $TAG" --notes-file notes.md release/*.zip release/SHA256.txt

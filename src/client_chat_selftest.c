@@ -1,0 +1,259 @@
+/* Offline selftest of the chat command layer (client_chat.c built with -DBC2_CHAT_SELFTEST: no hooks, no game).
+ * Checks the slash-command parser, the mute list round trip through a temp file, /rec without a recorder and the
+ * /smoke stub. Usage: client_chat_selftest.exe [outdir] (default: the exe's folder); exit 0 = all checks passed. */
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
+#include "client_chat.h"
+#ifndef BC2_CHAT_STANDALONE
+#include "client_recorder.h"
+#endif
+#include "client_smoke.h"
+#include "client_smoke_hook.h"
+
+void bc2_chat_selftest_init(void);
+
+#ifndef BC2_CHAT_STANDALONE
+/* recorder stand-ins (the real ones live in client_recorder.c, not linked here) */
+void bc2_client_recorder_status(char *out, int n) { lstrcpynA(out, "rec: not installed (selftest)", n); }
+int bc2_client_recorder_pause(int p) { (void)p; return 0; }
+#endif
+
+static int fails;
+static void check(int ok, const char *what)
+{
+    printf("%s %s\n", ok ? "ok  " : "FAIL", what);
+    if (!ok) fails++;
+}
+
+int main(int argc, char **argv)
+{
+    char path[MAX_PATH], out[384], exedir[MAX_PATH];
+    const char *dir = argc > 1 ? argv[1] : exedir;
+    float rgb_h[3];
+    FILE *f;
+    DWORD attr, len = GetModuleFileNameA(NULL, exedir, MAX_PATH);
+    /* default = the exe's own folder, not a cwd-relative "out_shared": from any other cwd the temp mute/hash
+     * files could not be created and the 11 list checks failed */
+    while (len && exedir[len - 1] != '\\') len--;
+    exedir[len ? len - 1 : 0] = 0;
+    if (!exedir[0]) lstrcpyA(exedir, ".");
+    attr = GetFileAttributesA(dir);
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        printf("FAIL temp dir '%s' does not exist\n", dir);
+        return 2;
+    }
+    bc2_chat_selftest_init();
+    wsprintfA(path, "%s\\selftest_muted.txt", dir);
+    DeleteFileA(path);
+    bc2_chat_set_mute_file(path);
+
+    check(bc2_chat_command("hello", out, sizeof(out)) == 0, "plain text is not a command");
+    check(bc2_chat_command("/vote yes", out, sizeof(out)) == 0, "unknown slash text passes through");
+    check(bc2_chat_command("/muted2", out, sizeof(out)) == 0, "prefix without separator is not a command");
+    check(bc2_chat_command("  /help", out, sizeof(out)) == 1 && strstr(out, "/smoke"), "/help lists commands");
+
+    check(bc2_chat_command("/mute", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/mute without arg = usage");
+    check(bc2_chat_command("/mute  Bob ", out, sizeof(out)) == 1 && strcmp(out, "Muted: Bob") == 0, "/mute Bob");
+    check(bc2_chat_command("/MUTE bob", out, sizeof(out)) == 1 && strstr(out, "Already"), "/mute is case-insensitive");
+    check(bc2_chat_command("/mute spam", out, sizeof(out)) == 1, "/mute spam");
+    check(bc2_chat_is_muted("BobbyTables", NULL), "sender substring match");
+    check(bc2_chat_is_muted("Alice", "SPAM!"), "first-word substring match");
+    check(!bc2_chat_is_muted("Alice", "hi"), "unmuted sender passes");
+    check(bc2_chat_command("/mutelist", out, sizeof(out)) == 1 && strstr(out, "Muted (2): Bob, spam"), "/mutelist");
+    check(bc2_chat_command("/mute Bob", out, sizeof(out)) == 1 && strcmp(out, "Already Muted: Bob") == 0, "/mute duplicate wording");
+    if (fopen_s(&f, path, "r") != 0) f = NULL;
+    check(f != NULL, "mute file written");
+    if (f) {
+        int lines = 0, seen = 0;
+        char line[256];
+        while (fgets(line, sizeof(line), f)) { lines++; if (strncmp(line, "Bob", 3) == 0) seen = 1; }
+        fclose(f);
+        check(lines == 4 && seen, "mute file = 2 header lines + 2 entries");
+    }
+    check(bc2_chat_command("/unmute bob", out, sizeof(out)) == 1 && strstr(out, "Unmuted: bob (1)"), "/unmute bob");
+    check(!bc2_chat_is_muted("Bob", NULL), "Bob unmuted");
+    check(bc2_chat_command("/unmute nobody", out, sizeof(out)) == 1 && strstr(out, "Not in"), "/unmute unknown");
+
+    /* hot reload: edit the file by hand */
+    if (fopen_s(&f, path, "w") == 0 && f) { fprintf(f, "# x\nCarol\n"); fclose(f); }
+    bc2_chat_set_mute_file(path);  /* resets the reload clock + mtime (the real thread waits 2 s) */
+    check(bc2_chat_is_muted("carol99", NULL) && !bc2_chat_is_muted("spam", NULL), "file edit reloaded");
+
+    /* /hash list + transform */
+    wsprintfA(path, "%s\\selftest_hashed.txt", dir);
+    DeleteFileA(path);
+    bc2_chat_set_hash_file(path);
+    check(bc2_chat_command("/hash Dave", out, sizeof(out)) == 1 && strcmp(out, "Hashed: Dave") == 0, "/hash Dave");
+    check(bc2_chat_is_hashed("xDAVEx") && !bc2_chat_is_hashed("Eve"), "hashed membership");
+    check(bc2_chat_command("/hashlist", out, sizeof(out)) == 1 && strstr(out, "Hashed (1): Dave"), "/hashlist");
+    check(!bc2_chat_is_muted("Dave", NULL), "hash list is separate from the mute list");
+    {
+        char t[] = "Hi Bob, go 2 B! \xc5\x82\xc3\xb3" "d\xc5\xba ok";   /* UTF-8 'lodz' with Polish letters */
+        char copy[64];
+        size_t n = strlen(t), i;
+        int same_len, punct_kept, utf8_kept = 1, alnum_gone = 1;
+        strcpy_s(copy, sizeof(copy), t);
+        bc2_chat_hash_text(t, (unsigned)n);
+        same_len = strlen(t) == n;
+        punct_kept = t[2] == ' ' && t[6] == ',' && t[14] == '!' && t[15] == ' ';
+        for (i = 0; i < n; i++) {
+            unsigned char c = (unsigned char)copy[i];
+            if (c >= 0x80 && t[i] != copy[i]) utf8_kept = 0;
+            if (((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) &&
+                !strchr("#$%&@!*?", t[i])) alnum_gone = 0;
+        }
+        check(same_len && punct_kept && utf8_kept && alnum_gone, "hash transform: same length, punctuation + UTF-8 kept, alnum -> symbols");
+        strcpy_s(copy, sizeof(copy), "abc");
+        bc2_chat_hash_text(copy, 3);
+        strcpy_s(t, sizeof(t), "abc");
+        bc2_chat_hash_text(t, 3);
+        check(strcmp(copy, t) == 0 && strcmp(t, "abc") != 0, "hash transform is deterministic");
+    }
+    check(bc2_chat_command("/unhash dave", out, sizeof(out)) == 1 && strstr(out, "Unhashed: dave (1)"), "/unhash");
+    DeleteFileA(path);
+
+#ifndef BC2_CHAT_STANDALONE
+    check(bc2_chat_command("/rec", out, sizeof(out)) == 1 && strstr(out, "not installed"), "/rec = status");
+    check(bc2_chat_command("/rec off", out, sizeof(out)) == 1 && strstr(out, "not installed"), "/rec off without recorder");
+    check(bc2_chat_command("/rec bogus", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/rec bogus = usage");
+#else
+    check(bc2_chat_command("/rec", out, sizeof(out)) == 0, "/rec is not a command in the standalone build");
+#endif
+    /* smoke: pure helpers + command state (no game memory: tick is never called here) */
+    {
+        float rgb[3], n1[3], n0[3];
+        unsigned char obj[0x50];
+        const DWORD vt = 0x0145BE04u, c1 = 0x3f4ac083u, c0 = 0x3e6147aeu, et = 0xB;
+        check(bc2_smoke_parse_color("red", rgb) && rgb[0] > 0.99f && rgb[1] < 0.2f, "parse 'red'");
+        check(bc2_smoke_parse_color(" #00ff80", rgb) && rgb[0] == 0.0f && rgb[1] == 1.0f && rgb[2] > 0.5f && rgb[2] < 0.51f, "parse #rrggbb");
+        check(!bc2_smoke_parse_color("#12345", rgb) && !bc2_smoke_parse_color("plaid", rgb), "reject bad colors");
+        bc2_smoke_map_colors(rgb, (const float[]){ 0.792f, 0.792f, 0.792f }, (const float[]){ 0.22f, 0.22f, 0.22f }, n1, n0);
+        check(n1[1] == 1.0f && n1[0] == 0.0f && n0[1] > 0.27f && n0[1] < 0.28f, "vapor mapping keeps the ramp");
+        bc2_smoke_map_colors((const float[]){ 1, 1, 1 }, (const float[]){ 0.914f, 0.914f, 0.914f }, (const float[]){ 0.4f, 0.4f, 0.4f }, n1, n0);
+        check(n1[0] == 1.0f && n0[0] > 0.5f && n0[0] < 0.51f, "trail mapping clamps at 1");
+        memset(obj, 0xcd, sizeof(obj));
+        memcpy(obj, &vt, 4); memcpy(obj + 0x14, &et, 4);
+        memcpy(obj + 0x30, &c1, 4); memcpy(obj + 0x34, &c1, 4); memcpy(obj + 0x38, &c1, 4);
+        memcpy(obj + 0x40, &c0, 4); memcpy(obj + 0x44, &c0, 4); memcpy(obj + 0x48, &c0, 4);
+        check(bc2_smoke_match(obj) == 1, "match vapor object (4th lanes 0xcd masked)");
+        obj[0x3C] = 0; obj[0x4C] = 0;
+        check(bc2_smoke_match(obj) == 1, "match vapor object (4th lanes 0)");
+        obj[0x44] ^= 1;
+        check(bc2_smoke_match(obj) == 0, "one color byte off = no match");
+        obj[0x44] ^= 1; obj[0x14] = 0xA;
+        check(bc2_smoke_match(obj) == 0, "wrong evaluator type = no match");
+    }
+    check(bc2_chat_command("/smoke plaid", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/smoke bad color = usage");
+    check(bc2_chat_command("/smoke red", out, sizeof(out)) == 1 && strstr(out, "smoke: red"), "/smoke red accepted");
+    check(bc2_chat_command("/smoke", out, sizeof(out)) == 1 && strstr(out, "smoke: red;"), "/smoke status shows the wish");
+    {
+        float c1[3], c0[3], d1[3], d0[3], h[3];
+        const float white[3] = { 1, 1, 1 };
+        bc2_smoke_hsv(0.0f, 1.0f, h); check(h[0] == 1.0f && h[1] == 0.0f && h[2] == 0.0f, "hsv 0 = red");
+        bc2_smoke_hsv(1.0f / 3.0f, 1.0f, h); check(h[1] == 1.0f && h[0] < 0.01f, "hsv 1/3 = green");
+        bc2_smoke_hsv(2.0f / 3.0f, 1.0f, h); check(h[2] == 1.0f && h[0] < 0.01f, "hsv 2/3 = blue");
+        bc2_smoke_anim_colors(1, 6.0f, 0.0f, NULL, 1, c1, c0);
+        bc2_smoke_anim_colors(1, 6.0f, 3.0f, NULL, 1, d1, d0);
+        check(c1[0] == 1.0f && d1[2] > 0.9f && c0[0] < 0.3f, "rainbow: t=0 red, t=half blue, dark end keeps the ramp");
+        bc2_smoke_anim_colors(2, 8.0f, 0.0f, NULL, 1, c1, c0);
+        check(c1[0] == 1.0f && c0[2] > 0.6f && c0[0] < 0.01f, "psycho: young red, old opposite hue (cyan-ish, darker)");
+        bc2_smoke_anim_colors(3, 2.0f, 0.5f, white, 1, c1, c0);
+        bc2_smoke_anim_colors(3, 2.0f, 1.5f, white, 1, d1, d0);
+        check(c1[0] > 0.99f && d1[0] < 0.11f && d1[0] > 0.09f, "pulse: peak 1.0 at quarter period, trough 0.1 at three quarters");
+    }
+    check(bc2_chat_command("/smoke rainbow", out, sizeof(out)) == 1 && strstr(out, "rainbow, period 6.0"), "/smoke rainbow default period");
+    check(bc2_chat_command("/smoke psycho 3", out, sizeof(out)) == 1 && strstr(out, "psycho, period 3.0"), "/smoke psycho 3");
+    check(bc2_chat_command("/smoke pulse blue 1.5", out, sizeof(out)) == 1 && strstr(out, "pulse, period 1.5"), "/smoke pulse blue 1.5");
+    check(bc2_chat_command("/smoke pulse", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/smoke pulse without colour = usage");
+    check(bc2_chat_command("/smoke rainbow fast", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/smoke rainbow bad period = usage");
+    check(bc2_chat_command("/smoke status", out, sizeof(out)) == 1 && strstr(out, "smoke: pulse 1.5s blue"), "status shows the mode");
+    check(bc2_chat_command("/smoke green", out, sizeof(out)) == 1 && strstr(out, "smoke: green"), "static colour after a mode");
+    check(bc2_smoke_parse_color("pumpkin", rgb_h) && rgb_h[0] == 1.0f && rgb_h[1] > 0.45f && rgb_h[1] < 0.47f, "parse 'pumpkin' (Halloween preset)");
+    check(bc2_chat_command("/smoke halloween", out, sizeof(out)) == 1 && strstr(out, "pulse, period 2.0"), "/smoke halloween = pulse pumpkin 2");
+    check(bc2_chat_command("/smoke status", out, sizeof(out)) == 1 && strstr(out, "smoke: pulse 2.0s pumpkin"), "status shows the halloween preset");
+    check(bc2_chat_command("/smoke alpha 0.25", out, sizeof(out)) == 1 && strstr(out, "alpha = 0.25"), "/smoke alpha 0.25");
+    check(bc2_chat_command("/smoke tpl ambient orig", out, sizeof(out)) == 1 && strstr(out, "ambient = orig"), "/smoke tpl ambient orig");
+    check(bc2_chat_command("/smoke alpha plaid", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/smoke alpha bad = usage");
+    check(bc2_chat_command("/smoke status", out, sizeof(out)) == 1 && strstr(out, "al=0.25") && strstr(out, "am=orig"), "status shows template fields");
+    /* r259 per-grenade colours: parser, index helper, and the hook callback against fake game objects */
+    check(bc2_chat_command("/smoke per", out, sizeof(out)) == 1 && strstr(out, "per grenade, 8 colours"), "/smoke per (default 8)");
+    check(bc2_chat_command("/smoke per 5", out, sizeof(out)) == 1 && strstr(out, "per grenade, 5 colours"), "/smoke per 5");
+    check(bc2_chat_command("/smoke per 99", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/smoke per 99 = usage");
+    check(bc2_chat_command("/smoke per x", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/smoke per x = usage");
+    check(bc2_chat_command("/smoke status", out, sizeof(out)) == 1 && strstr(out, "smoke: per 5;") && strstr(out, "hook pending") &&
+          strlen(out) <= 110, "status shows per mode + hook state within one chat line");
+    {
+        unsigned seen = 0, i, inrange = 1, idx0, idx1;
+        for (i = 0; i < 64; i++) {
+            unsigned ix = bc2_smoke_per_index(0x02000000u + i * 0x1F0u, 8);
+            if (ix >= 8) inrange = 0; else seen |= 1u << ix;
+        }
+        check(inrange && seen == 0xFFu, "per index: in range, 64 heap-like keys hit all 8 colours");
+        idx0 = bc2_smoke_per_index(0x0A1B2C30u, 8);
+        idx1 = bc2_smoke_per_index(0x0A1B2C30u, 8);
+        check(idx0 == idx1 && bc2_smoke_per_index(0x0A1B2C30u, 0) == 0, "per index: deterministic, npal 0 -> 0");
+        check(bc2_smoke_per_index(0x0A1B2C30u, 8) != bc2_smoke_per_index(0x0A1B2D30u, 8) ||
+              bc2_smoke_per_index(0x0A1B2C30u, 8) != bc2_smoke_per_index(0x0A1B2E30u, 8), "per index: neighbouring keys differ");
+    }
+    {
+        static __declspec(align(16)) unsigned char pobj[0x50], block[0x200], inst[0x160], ent[0xA0], roots[16][0xA0];
+        const DWORD vt = 0x0145BE04u, c1 = 0x3f4ac083u, c0 = 0x3e6147aeu, et = 0xB;
+        DWORD addr = (DWORD)(UINT_PTR)pobj, got, first, p;
+        const int kind = 1;
+        float pal[3], e1[3], e0[3], g1[3];
+        unsigned want, j, other = 16;
+        memset(pobj, 0xcd, sizeof(pobj));
+        memcpy(pobj, &vt, 4); memcpy(pobj + 0x14, &et, 4);
+        memcpy(pobj + 0x30, &c1, 4); memcpy(pobj + 0x34, &c1, 4); memcpy(pobj + 0x38, &c1, 4);
+        memcpy(pobj + 0x40, &c0, 4); memcpy(pobj + 0x44, &c0, 4); memcpy(pobj + 0x48, &c0, 4);
+        memset(roots, 0, sizeof(roots));
+        p = (DWORD)(UINT_PTR)roots[0]; memcpy(ent + 0x64, &p, 4);           /* entity -> root 0 (root +0x64 = 0) */
+        p = (DWORD)(UINT_PTR)ent;      memcpy(inst + 0x154, &p, 4);         /* inst -> entity */
+#define SET_BLOCK() memcpy(block + 0xE0, &addr, 4)
+#define BLOCK_PTR() (memcpy(&got, block + 0xE0, 4), got)
+        bc2_smoke_per_test_set_known(&addr, &kind, 1, 0);
+        SET_BLOCK();
+        bc2_smoke_per_apply((DWORD)(UINT_PTR)block, (DWORD)(UINT_PTR)inst);
+        check(BLOCK_PTR() == addr, "per apply: disabled (npal 0) changes nothing");
+        bc2_smoke_per_test_set_known(&addr, &kind, 1, 8);
+        bc2_smoke_per_apply((DWORD)(UINT_PTR)block, (DWORD)(UINT_PTR)inst);
+        first = BLOCK_PTR();
+        want = bc2_smoke_per_index((DWORD)(UINT_PTR)roots[0], 8);
+        bc2_smoke_hsv((float)want / 8.0f, 1.0f, pal);
+        bc2_smoke_map_colors(pal, (const float[]){ 0.792f, 0.792f, 0.792f }, (const float[]){ 0.22f, 0.22f, 0.22f }, e1, e0);
+        if (first != addr && first) memcpy(g1, (const void *)(UINT_PTR)(first + 0x30), 12); else memset(g1, 0, sizeof(g1));
+        check(first != addr && (first & 15) == 0 && memcmp((const void *)(UINT_PTR)first, pobj, 0x30) == 0,
+              "per apply: block gets an aligned clone, vtable/evaluator/coefficients preserved");
+        check(first != addr && memcmp(g1, pobj + 0x30, 12) != 0 && memcmp(g1, e1, 12) == 0 &&
+              memcmp((const void *)(UINT_PTR)(first + 0x40), e0, 12) == 0 && memcmp(pobj + 0x30, &c1, 4) == 0,
+              "per apply: clone Color1/Color0 = palette mapping of the root's index, shared object untouched");
+        SET_BLOCK();
+        bc2_smoke_per_apply((DWORD)(UINT_PTR)block, (DWORD)(UINT_PTR)inst);
+        check(BLOCK_PTR() == first, "per apply: same root -> same clone");
+        for (j = 1; j < 16 && other == 16; j++)
+            if (bc2_smoke_per_index((DWORD)(UINT_PTR)roots[j], 8) != want) other = j;
+        if (other < 16) { p = (DWORD)(UINT_PTR)roots[other]; memcpy(ent + 0x64, &p, 4); }
+        SET_BLOCK();
+        bc2_smoke_per_apply((DWORD)(UINT_PTR)block, (DWORD)(UINT_PTR)inst);
+        check(other < 16 && BLOCK_PTR() != first && BLOCK_PTR() != addr, "per apply: another root -> another colour clone");
+        p = (DWORD)(UINT_PTR)block;   /* not a known colour object */
+        memcpy(block + 0xE0, &p, 4);
+        bc2_smoke_per_apply((DWORD)(UINT_PTR)block, (DWORD)(UINT_PTR)inst);
+        check(BLOCK_PTR() == p, "per apply: unknown data pointer changes nothing");
+        SET_BLOCK();
+        bc2_smoke_per_apply((DWORD)(UINT_PTR)block, 0x10u);
+        check(BLOCK_PTR() == addr, "per apply: unreadable inst (0x10) changes nothing (SEH)");
+        p = 0; memcpy(inst + 0x154, &p, 4);   /* entity 0 -> key = inst itself */
+        bc2_smoke_per_apply((DWORD)(UINT_PTR)block, (DWORD)(UINT_PTR)inst);
+        check(BLOCK_PTR() != addr, "per apply: no entity -> keyed by the instance, still recoloured");
+#undef SET_BLOCK
+#undef BLOCK_PTR
+        bc2_smoke_per_test_set_known(NULL, NULL, 0, 0);
+    }
+    check(bc2_chat_command("/smoke off", out, sizeof(out)) == 1 && strstr(out, "off"), "/smoke off");
+
+    DeleteFileA(path);
+    printf("%d FAIL\n", fails);
+    return fails ? 1 : 0;
+}
