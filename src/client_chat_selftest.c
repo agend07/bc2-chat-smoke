@@ -300,9 +300,9 @@ int main(int argc, char **argv)
         bc2_fx_tint((const float[]){ 1.0f, 0.0f, 0.0f }, c1, t);
         check(t[0] == 0.5f && t[1] == 0.0f && t[2] == 0.0f, "fx tint: wish hue, original brightness");
         bc2_fx_tint((const float[]){ 1.0f, 0.5f, 0.0f }, (const float[]){ 3.0f, 0.0f, 0.0f }, t);
-        check(t[0] == 1.0f && t[1] == 0.5f && t[2] == 0.0f, "fx tint: HDR original clamps to the wish");
+        check(t[0] == 3.0f && t[1] == 1.5f && t[2] == 0.0f, "fx tint: HDR original keeps its brightness (no clamp)");
         check(bc2_fx_key_ok("tracer") && bc2_fx_key_ok("weapons/") && bc2_fx_key_ok("Muzzle_AK"), "fx key: valid names");
-        check(!bc2_fx_key_ok("list") && !bc2_fx_key_ok("off") && !bc2_fx_key_ok("") && !bc2_fx_key_ok("a=b") &&
+        check(!bc2_fx_key_ok("list") && !bc2_fx_key_ok("all") && !bc2_fx_key_ok("off") && !bc2_fx_key_ok("") && !bc2_fx_key_ok("a=b") &&
               !bc2_fx_key_ok("a;b") && !bc2_fx_key_ok("0123456789012345678901234567890123"), "fx key: reserved / bad chars / too long");
 
         bc2_fx_init();   /* selftest: no ini, only the locks */
@@ -332,8 +332,9 @@ int main(int argc, char **argv)
         bc2_fx_scan_doc((DWORD)(UINT_PTR)doc_s);
         bc2_fx_scan_doc(0x10u);                  /* unreadable candidate */
         bc2_fx_scan_end();
-        check(bc2_chat_command("/fx list", out, sizeof(out)) == 1 && strstr(out, "fx: 1,") && strstr(out, "tracer_rifle_01") &&
-              !strstr(out, "smoke"), "/fx list: the tracer, not the smoke grenade");
+        check(bc2_chat_command("/fx list", out, sizeof(out)) == 1 && strstr(out, "fx: 1 emitters") && strstr(out, "\ntracer 1, ") &&
+              !strstr(out, "smoke"), "/fx list: group counts on the second line, the smoke grenade not counted");
+        check(bc2_chat_command("/fx list all", out, sizeof(out)) == 1 && strstr(out, "page 1/1\ntracer_rifle_01"), "/fx list all: names");
         check(bc2_chat_command("/fx list zzz", out, sizeof(out)) == 1 && strstr(out, "no colour emitters matching zzz"), "/fx list filter");
         check(bc2_chat_command("/fx list 2", out, sizeof(out)) == 1 && strstr(out, "only 1 page"), "/fx list page past the end");
         check(bc2_chat_command("/fx tracer purple-ish", out, sizeof(out)) == 1 && strstr(out, "unknown colour"), "/fx bad colour");
@@ -358,6 +359,43 @@ int main(int argc, char **argv)
         bc2_fx_apply();
         check(bc2_chat_command("/fx status", out, sizeof(out)) == 1 && strstr(out, "0 rule(s)"), "/fx status after off");
         check(bc2_chat_command("/fx bogus", out, sizeof(out)) == 1 && strstr(out, "Usage"), "/fx usage");
+        {   /* paging: 40 documents with distinct colour objects; every page = header + at most 3 lines of <= 90 chars */
+            static __declspec(align(16)) unsigned char mp[40][0x50], mproc[40][0x40], mdata[40][0xF0], mdoc[40][0x40];
+            static char mpath[40][64];
+            int k, pages = 0, ok = 1, seen = 0;
+            for (k = 0; k < 40; k++) {
+                sprintf_s(mpath[k], sizeof(mpath[k]), "FX/Paging/Em_paging_emitter_number_%02d", k);
+                memcpy(mp[k], pcid_s, sizeof(pcid_s));
+                PUT(mproc[k], 0x28, 0x17); PUT(mproc[k], 0x0C, mp[k]); PUT(mproc[k], 0x20, 0);
+                PUT(mdata[k], 0xB4, mproc[k]);
+                PUT(mdoc[k], 0, bc2_exe()->vt_emitter_doc); PUT(mdoc[k], 0x0C, mpath[k]); PUT(mdoc[k], 0x18, mdata[k]);
+            }
+            bc2_fx_scan_begin();
+            for (k = 0; k < 40; k++)
+                bc2_fx_scan_doc((DWORD)(UINT_PTR)mdoc[k]);
+            bc2_fx_scan_end();
+            for (k = 1; k <= 10; k++) {
+                char cmd[40], *line, *nl;
+                int nlines = 0;
+                sprintf_s(cmd, sizeof(cmd), "/fx list paging %d", k);
+                bc2_chat_command(cmd, out, sizeof(out));
+                if (strstr(out, "only")) break;
+                pages++;
+                for (line = out; line; line = nl ? nl + 1 : NULL) {
+                    nl = strchr(line, '\n');
+                    if (nl) *nl = 0;   /* count this line only */
+                    if ((nl ? (int)(nl - line) : (int)strlen(line)) > 90) ok = 0;
+                    if (nlines++ && strstr(line, "paging_emitter")) {
+                        const char *q = line;
+                        while ((q = strstr(q, "paging_emitter")) != NULL) { seen++; q++; }
+                    }
+                }
+                if (nlines > 4) ok = 0;
+                if (k == 1 && !strstr(out, "fx: 40 ~paging, page 1/")) ok = 0;
+            }
+            check(ok && pages >= 2 && seen == 40, "/fx list paging: every name once, <= 4 lines of <= 90 chars per page");
+            check(bc2_chat_command("/fx list", out, sizeof(out)) == 1 && strstr(out, "fx: 41 emitters"), "/fx list counts all");
+        }
         bc2_fx_level(0);
 #undef PUT
     }

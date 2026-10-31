@@ -21,7 +21,8 @@ void bc2_client_chat_attach(void);
 void bc2_client_chat_detach(void);
 
 /* Pure command layer (selftest-able without the game): handles one submitted chat line (UTF-8, leading spaces ok).
- * Returns 1 when the line was a local command (reply in out, shown only to the local player), 0 = not a command
+ * Returns 1 when the line was a local command (reply in out, shown only to the local player; '\n' splits it into
+ * several chat messages), 0 = not a command
  * (send to the server as usual). */
 int bc2_chat_command(const char *utf8_line, char *out, int out_size);
 

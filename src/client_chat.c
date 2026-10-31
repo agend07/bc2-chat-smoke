@@ -590,11 +590,19 @@ static void __fastcall hook_submit(void *self, void *edx, int channel, estring16
     }
     utf8[n > 0 ? n : 0] = 0;
     if (n > 0 && bc2_chat_command(utf8, reply, sizeof(reply))) {
-        char line[400];
-        wsprintfA(line, "cmd '%.120s' -> '%.200s'", utf8, reply);
+        char line[520], *p, *nl;
+        int i;
+        wsprintfA(line, "cmd '%.120s' -> '%.380s'", utf8, reply);
+        for (i = 0; line[i]; i++)
+            if (line[i] == '\n') line[i] = '|';
         chat_log(line);
-        if (reply[0])
-            show_local(reply);
+        /* a multi-line reply ('\n' separated, /fx list) = one local chat message per line, in order */
+        for (p = reply; *p; p = nl ? nl + 1 : p + strlen(p)) {
+            nl = strchr(p, '\n');
+            if (nl) *nl = 0;
+            if (*p) show_local(p);
+            if (!nl) break;
+        }
         return;  /* consumed locally, never sent */
     }
     g_orig_submit(self, NULL, channel, text);

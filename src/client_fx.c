@@ -46,7 +46,7 @@
 #define FX_PATH              160
 #define FX_SHORT             48
 #define FX_KEY               32
-#define FX_LINE              110      /* visible chars of one chat line */
+#define FX_LINE              90       /* visible chars of one chat line (the game cuts at ~98, live 2026-10-31) */
 #define FX_RESCAN_MS         60000u
 #define SMOKE_KEY            "smokegrenade"   /* left to /smoke, see client_fx.h */
 
@@ -126,17 +126,16 @@ void bc2_fx_tint(const float wish[3], const float orig[3], float out[3])
     int i;
     if (orig[1] > v) v = orig[1];
     if (orig[2] > v) v = orig[2];
-    if (v > 1.0f) v = 1.0f;   /* HDR originals: keep the wish within range */
     if (v < 0.0f) v = 0.0f;
     for (i = 0; i < 3; i++) {
         float c = wish[i] * v;
-        out[i] = c < 0.0f ? 0.0f : c > 1.0f ? 1.0f : c;
+        out[i] = c < 0.0f ? 0.0f : c;   /* no upper clamp: fire / flares are HDR (originals up to 20, live log) */
     }
 }
 
 int bc2_fx_key_ok(const char *key)
 {
-    static const char *const RESERVED[] = { "list", "status", "off", "help" };
+    static const char *const RESERVED[] = { "list", "status", "off", "help", "all" };
     size_t n = key ? strlen(key) : 0, i;
     if (n < 1 || n >= FX_KEY)
         return 0;
@@ -569,56 +568,131 @@ static int matches_filter(const fx_tpl *t, const char *filter_lc)
     return !filter_lc[0] || contains_lc(t->path, filter_lc);
 }
 
-/* one page of unique short names that fit the chat line; page is 1-based */
-static void list_line(const char *filter_lc, int page, char *out, int size)
+/* Line packer for multi-line replies ('\n' separated; client_chat.c shows one chat message per line). Items are
+ * appended with ", " and wrapped at FX_LINE visible chars; returns 0 when the item did not fit in max_lines. */
+typedef struct { char *out; int size, len, line_len, lines, max_lines; } fx_pack;
+
+static int pack_add(fx_pack *p, const char *item)
 {
-    char names[FX_LINE + 8], head[64];
+    int n = (int)strlen(item), sep = p->line_len ? 2 : 0;
+    if (p->line_len && p->line_len + sep + n > FX_LINE) {
+        if (p->lines >= p->max_lines || p->len + 1 >= p->size)
+            return 0;
+        p->out[p->len++] = '\n';
+        p->out[p->len] = 0;
+        p->lines++;
+        p->line_len = 0;
+        sep = 0;
+    }
+    if (p->len + sep + n + 1 > p->size)
+        return 0;
+    if (sep) { memcpy(p->out + p->len, ", ", 2); p->len += 2; }
+    memcpy(p->out + p->len, item, (size_t)n + 1);
+    p->len += n;
+    p->line_len += sep + n;
+    return 1;
+}
+
+static void pack_init(fx_pack *p, char *out, int size, int max_lines, const char *head)
+{
+    p->out = out; p->size = size; p->len = 0; p->line_len = 0; p->lines = 1; p->max_lines = max_lines;
+    out[0] = 0;
+    lstrcpynA(out, head, size);
+    p->len = p->line_len = lstrlenA(out);
+}
+
+/* unique short names matching the filter (g_sorted is ordered by short name) */
+static int count_unique(const char *filter_lc)
+{
     const char *prev = NULL;
-    int i, total = 0, cur = 1, used = 0, upto = 0, budget;
-    for (i = 0; i < g_nsorted; i++) {   /* unique short names matching the filter */
+    int i, total = 0;
+    for (i = 0; i < g_nsorted; i++) {
         const fx_tpl *t = &g_tpl[g_sorted[i]];
         if (!matches_filter(t, filter_lc) || (prev && strcmp(prev, t->shortn) == 0))
             continue;
         prev = t->shortn;
         total++;
     }
+    return total;
+}
+
+/* rule names that make useful groups (substrings of the asset paths); /fx list shows those with a count */
+static const char *const GROUPS[] = {
+    "muzz", "tracer", "trail", "blood", "impact", "spark", "fire", "flame", "flare", "glow", "explo", "vexp", "elec",
+    "smoke", "debris", "water", "snow", "sand", "ambient", "destruction", "vehicles", "weapons/",
+};
+
+static void list_groups(char *out, int size)
+{
+    char head[80], item[40];
+    fx_pack p;
+    int i, total = count_unique("");
+    _snprintf_s(head, sizeof(head), _TRUNCATE, "fx: %d emitters. Groups for /fx <group> <color>:", total);
+    pack_init(&p, out, size, 4, head);
+    p.line_len = FX_LINE;   /* groups start on the second line */
+    for (i = 0; i < (int)(sizeof(GROUPS) / sizeof(GROUPS[0])); i++) {
+        int n = count_unique(GROUPS[i]);
+        if (!n)
+            continue;
+        _snprintf_s(item, sizeof(item), _TRUNCATE, "%s %d", GROUPS[i], n);
+        if (!pack_add(&p, item))
+            break;
+    }
+    pack_add(&p, "| names: /fx list <group>");
+}
+
+/* pack every matching name into pages of 3 chat lines; keeps the text of page want in buf; returns the page count */
+#define LIST_LINES 3
+static int pack_pages(const char *filter_lc, int want, char *buf, int size)
+{
+    const char *prev = NULL;
+    int i, cur = 1, lines = 1, line_len = 0;
+    buf[0] = 0;
+    for (i = 0; i < g_nsorted; i++) {
+        const fx_tpl *t = &g_tpl[g_sorted[i]];
+        int n, sep;
+        if (!matches_filter(t, filter_lc) || (prev && strcmp(prev, t->shortn) == 0))
+            continue;
+        prev = t->shortn;
+        n = (int)strlen(t->shortn);
+        sep = line_len ? 2 : 0;
+        if (line_len && line_len + sep + n > FX_LINE) {
+            sep = 0;
+            line_len = 0;
+            if (lines < LIST_LINES)
+                lines++;
+            else {   /* page full: the next page starts with this name */
+                cur++;
+                lines = 1;
+            }
+        }
+        if (cur == want) {
+            if (buf[0])
+                strcat_s(buf, size, line_len ? ", " : "\n");
+            strncat_s(buf, size, t->shortn, _TRUNCATE);
+        }
+        line_len += sep + n;
+    }
+    return cur;
+}
+
+static void list_names(const char *filter_lc, int page, char *out, int size)
+{
+    char buf[LIST_LINES * (FX_LINE + 2) + 8];
+    int total = count_unique(filter_lc), pages;
     if (!total) {
         _snprintf_s(out, size, _TRUNCATE, "fx: no colour emitters%s%s known (%d docs this level; /fx status)",
                     filter_lc[0] ? " matching " : "", filter_lc, g_ndocs_seen);
         return;
     }
-    _snprintf_s(head, sizeof(head), _TRUNCATE, "fx: %d%s%s, p%d: ", total, filter_lc[0] ? " ~" : "", filter_lc, page);
-    budget = FX_LINE - 14 - lstrlenA(head);   /* 14 chars kept for the " (+NNN, pNN)" tail */
-    names[0] = 0;
-    prev = NULL;
-    for (i = 0; i < g_nsorted && cur <= page; i++) {
-        const fx_tpl *t = &g_tpl[g_sorted[i]];
-        int len;
-        if (!matches_filter(t, filter_lc) || (prev && strcmp(prev, t->shortn) == 0))
-            continue;
-        prev = t->shortn;
-        len = (int)strlen(t->shortn);
-        if (used && used + 2 + len > budget) {   /* page full: start the next one with this name */
-            cur++;
-            used = 0;
-            if (cur > page)
-                break;
-        }
-        if (cur == page) {
-            if (used) strcat_s(names, sizeof(names), ", ");
-            strncat_s(names, sizeof(names), t->shortn, _TRUNCATE);
-        }
-        used += (used ? 2 : 0) + len;
-        upto++;
-    }
-    if (cur < page) {
-        _snprintf_s(out, size, _TRUNCATE, "fx: %d emitters, only %d page(s)", total, cur);
-        return;
-    }
-    if (upto < total)
-        _snprintf_s(out, size, _TRUNCATE, "%s%s (+%d, p%d)", head, names, total - upto, page + 1);
+    pages = pack_pages(filter_lc, page, buf, sizeof(buf));
+    if (page > pages)
+        _snprintf_s(out, size, _TRUNCATE, "fx: %d emitters%s%s, only %d page(s)", total, filter_lc[0] ? " ~" : "", filter_lc, pages);
+    else if (page < pages)
+        _snprintf_s(out, size, _TRUNCATE, "fx: %d%s%s, page %d/%d, next: /fx list %s%s%d\n%s", total, filter_lc[0] ? " ~" : "",
+                    filter_lc, page, pages, filter_lc, filter_lc[0] ? " " : "", page + 1, buf);
     else
-        _snprintf_s(out, size, _TRUNCATE, "%s%s", head, names);
+        _snprintf_s(out, size, _TRUNCATE, "fx: %d%s%s, page %d/%d\n%s", total, filter_lc[0] ? " ~" : "", filter_lc, page, pages, buf);
 }
 
 static void status_line(char *out, int size)
@@ -678,7 +752,7 @@ int bc2_fx_command(const char *args, char *out, int out_size)
         char filter[FX_KEY] = "";
         int page = 1;
         char *end;
-        /* "/fx list", "/fx list 2", "/fx list tracer", "/fx list tracer 2" */
+        /* "/fx list", "/fx list 2", "/fx list all 2", "/fx list tracer", "/fx list tracer 2" */
         if (w2 && *w2) {
             long v = strtol(w2, &end, 10);
             if (!*end && !w3 && v >= 1) page = (int)v;
@@ -704,7 +778,10 @@ int bc2_fx_command(const char *args, char *out, int out_size)
             lstrcpynA(out, "fx: nothing scanned yet, scanning now (in a level only); ask again in a few seconds", out_size);
             return 1;
         }
-        list_line(filter, page, out, out_size);
+        if (!w2 || !*w2)
+            list_groups(out, out_size);   /* /fx list = group counts; /fx list all|<filter> [page] = names */
+        else
+            list_names(_stricmp(filter, "all") == 0 ? "" : filter, page, out, out_size);
         LeaveCriticalSection(&g_fx_cs);
         return 1;
     }
