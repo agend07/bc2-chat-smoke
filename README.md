@@ -131,6 +131,9 @@ by hand in that case.
 
 - Retail / Project Rome `BFBC2Game.exe`, SHA-256
   `3911fcc8914b0158c434cee36f19295316e715d4c9a0e70c857e8c39e3d54258`.
+- **Not yet supported: the Steam build** (`BFBC2Game.exe` SHA-256 `22e96001...`, under `steamapps\common`). It is a
+  different compilation with different addresses; the dll detects it and stays inactive. Support is planned once the
+  addresses for that build are known. Check your exe with `certutil -hashfile BFBC2Game.exe SHA256`.
 - The dll checks the expected vtable bytes first and stays inactive on any other exe (the log then says
   `vtable bytes differ from the retail exe; chat hooks inactive`). Nothing is hooked in that case.
 - 32-bit (x86) only, like the game. Windows 10/11.
